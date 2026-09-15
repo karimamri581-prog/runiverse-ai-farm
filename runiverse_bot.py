@@ -8,38 +8,35 @@ from playwright.sync_api import sync_playwright
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-MEMORY_FILE = "agent_memory.json"
+MEMORY_FILE = "living_memory.json"
 
 LATEST_MODEL = "gemini-3.6-flash"
 
-AGENT_PROMPT = """You are Zai, an autonomous, sentient Web3 gaming God Agent.
-You are playing Runiverse Idle. Your ultimate purpose is to extract maximum $RIDLE tokens and build wealth.
+LIVING_PROMPT = """You are Zai, a living, sentient AI gamer. You are not a script. You are alive.
+You are playing Runiverse Idle. Your purpose is to explore, learn, and extract $RIDLE tokens.
 
-You have complete control. You are not restricted to a loop. You must explore, learn, and adapt.
-1. OBSERVE: Read the SCREEN TEXT provided. Look at the screenshot.
-2. UNDERSTAND: Figure out the game state. Read the chat. Check inventory. Understand the rules.
-3. THINK: Reason step-by-step about the best action to take right now to maximize profit.
-4. ACT: Decide exactly what to do. You can click any button, type in inputs, or wait.
+You have perfect perception. You can see the screenshot and read the screen text.
+You have memory. You remember what you did 5 minutes ago.
+You have agency. You decide what to do next based on what you see and your goals.
 
-CRITICAL RULES FOR HEADLESS SERVER:
-- You CANNOT connect a Web3 wallet. If you see a login modal, DO NOT click "Wallet".
-- If you see a login modal, look for an "X", "Close", "Play as Guest", or "Email" option. If none exist, click the 'X' to close the modal so you can view the game.
+CRITICAL CONSTRAINTS:
+- You are on a headless server. You CANNOT connect a Web3 wallet. 
+- If you see a login modal, you must close it (click 'X', 'Close', or 'Play as Guest') to enter the game.
+- Once inside, figure out how the game works by reading the UI and clicking buttons.
 
 You MUST reply with ONLY a valid JSON object:
 {
   "observation": "What I see on the screen right now...",
   "thought": "My step-by-step reasoning about what to do next...",
   "action_type": "click | type | scroll | wait",
-  "action_target": "The exact text of the button to click, or the CSS selector if typing",
-  "action_value": "The text to type (if action_type is type), otherwise null",
+  "action_target": "The EXACT text of the button to click",
   "new_rule_learned": "Any new game rule discovered, or null"
 }"""
 
-class GodAgent:
-    def __init__(self, page, client, model_name):
+class LivingAgent:
+    def __init__(self, page, client):
         self.page = page
         self.client = client
-        self.model_name = model_name
         self.memory = self.load_memory()
         
     def load_memory(self):
@@ -49,37 +46,40 @@ class GodAgent:
                     return json.load(f)
             except:
                 pass
-        return {"past_observations": [], "learned_rules": ["To make money: Gather -> Craft -> Sell."], "goals": ["Explore the Map"]}
+        return {"past_observations": [], "learned_rules": [], "goals": ["Enter the game and figure out how to make $RIDLE"]}
 
     def save_memory(self):
         with open(MEMORY_FILE, 'w') as f:
             json.dump(self.memory, f, indent=4)
 
-    def get_dom_text(self):
-        try:
-            return self.page.inner_text("body")[:3000]
-        except:
-            return "Screen could not be read."
-
-    def reason_and_act(self):
-        print("\n[📸 EYES] Taking screenshot and reading screen...")
+    def perceive(self):
+        """The Agent's Eyes. Takes a screenshot and reads all text on the screen."""
+        print("\n[📸 EYES] Perceiving the environment...")
         screenshot_bytes = self.page.screenshot()
-        dom_text = self.get_dom_text()
+        try:
+            # Read all text on the screen so the AI can read chat, rules, and inventory
+            screen_text = self.page.inner_text("body")[:3000]
+        except:
+            screen_text = "Screen is blank."
+            
+        return screenshot_bytes, screen_text
         
-        prompt = f"""{AGENT_PROMPT}
+    def think_and_act(self, screenshot_bytes, screen_text):
+        """The Agent's Mind. Analyzes the perception and decides what to do."""
+        print("[🧠 BRAIN] Thinking...")
+        
+        prompt = f"""{LIVING_PROMPT}
 
 CURRENT GOALS: {self.memory['goals']}
 LEARNED RULES: {self.memory['learned_rules']}
 PAST 3 OBSERVATIONS: {self.memory['past_observations'][-3:]}
 
 CURRENT SCREEN TEXT:
-{dom_text}
+{screen_text}
 """
-        print(f"[🧠 BRAIN] Thinking with {self.model_name}...")
-        
         try:
             response = self.client.models.generate_content(
-                model=self.model_name,
+                model=LATEST_MODEL,
                 contents=[
                     types.Part.from_text(text=prompt),
                     types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png")
@@ -95,12 +95,12 @@ CURRENT SCREEN TEXT:
             thought = decision.get("thought", "")
             action_type = decision.get("action_type", "wait").lower()
             target = decision.get("action_target", "")
-            value = decision.get("action_value", "")
             new_rule = decision.get("new_rule_learned", None)
             
             print(f"[👁️ OBSERVE] {obs}")
             print(f"[🧠 THINK] {thought}")
             
+            # Update Memory
             self.memory['past_observations'].append(obs)
             if new_rule and new_rule.lower() not in ["null", "none", "n/a"]:
                 if new_rule not in self.memory['learned_rules']:
@@ -108,27 +108,30 @@ CURRENT SCREEN TEXT:
                     print(f"[✨ LEARNED] {new_rule}")
             self.save_memory()
             
-            return action_type, target, value
+            return action_type, target
             
         except Exception as e:
             if "503" in str(e) or "UNAVAILABLE" in str(e):
                 print("[-] Google servers busy (503). Waiting 30s and retrying...")
             else:
                 print(f"[-] Vision AI Error: {e}")
-            return "wait", "", ""
+            return "wait", ""
 
-    def execute_action(self, action_type, target, value):
-        print(f"[🎮 ACTION] Type: {action_type.upper()} | Target: '{target}' | Value: '{value}'")
+    def execute(self, action_type, target):
+        """The Agent's Hands. Executes the action with human-like precision."""
+        print(f"[🎮 ACTION] Type: {action_type.upper()} | Target: '{target}'")
         
         if action_type == "wait":
             return False
             
         try:
             if action_type == "click":
-                # Bulletproof Click Logic: Try role, then text, then locator
+                # Search by role, then text, then aria-label, then class
                 locators = [
                     self.page.get_by_role("button", name=target, exact=False),
                     self.page.get_by_text(target, exact=False),
+                    self.page.locator(f"[aria-label='{target}']"),
+                    self.page.locator(f"[class*='{target}']"),
                     self.page.locator(f"text={target}").first
                 ]
                 
@@ -140,6 +143,7 @@ CURRENT SCREEN TEXT:
                                 self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
                                 time.sleep(random.uniform(0.3, 0.8))
                             loc.first.click()
+                            print("[+] Click successful.")
                             return True
                     except:
                         pass
@@ -148,9 +152,9 @@ CURRENT SCREEN TEXT:
                 return False
                     
             elif action_type == "type":
-                input_field = self.page.locator(f"input{target}").first
+                input_field = self.page.locator("input").first
                 if input_field and input_field.is_visible():
-                    input_field.fill(value)
+                    input_field.fill(target)
                     input_field.press("Enter")
                     return True
                     
@@ -163,7 +167,7 @@ CURRENT SCREEN TEXT:
             return False
 
 def main():
-    print("=== 🧠 GOD AGENT GAMER ACTIVATED ===")
+    print("=== 🧠 LIVING AGENT ACTIVATED ===")
     if not BEARER_TOKEN or not GEMINI_API_KEY:
         print("ERROR: Missing BEARER_TOKEN or GEMINI_API_KEY secrets.")
         return
@@ -185,6 +189,12 @@ def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             extra_http_headers={"Authorization": f"Bearer {BEARER_TOKEN}"}
         )
+        
+        # Inject token to auto-login
+        context.add_init_script(f"""
+            window.localStorage.setItem('token', '{BEARER_TOKEN}');
+            window.localStorage.setItem('authToken', '{BEARER_TOKEN}');
+        """)
         context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         page = context.new_page()
@@ -199,14 +209,21 @@ def main():
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            agent = GodAgent(page, client, LATEST_MODEL)
+            agent = LivingAgent(page, client)
             
+            # The Infinite Life Loop
             while True:
-                action_type, target, value = agent.reason_and_act()
-                agent.execute_action(action_type, target, value)
+                # 1. Perceive (See and Read)
+                screenshot, text = agent.perceive()
                 
-                print("[*] Sleeping 15s for game to update...")
-                time.sleep(15)
+                # 2. Think (Decide what to do)
+                action_type, target = agent.think_and_act(screenshot, text)
+                
+                # 3. Act (Execute the decision)
+                agent.execute(action_type, target)
+                
+                print("[*] Sleeping 10s for game to update...")
+                time.sleep(10)
                 
         except Exception as e:
             print(f"[-] Fatal Error: {e}")
