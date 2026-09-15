@@ -2,9 +2,7 @@ import time
 import os
 import random
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 
-# Pull your user session token from GitHub Secrets
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 
 def main():
@@ -15,7 +13,6 @@ def main():
         return
 
     with sync_playwright() as p:
-        # Launch headless Chrome with Stealth arguments
         browser = p.chromium.launch(
             headless=True, 
             args=[
@@ -25,12 +22,14 @@ def main():
             ]
         )
         
-        # Apply stealth settings to bypass Cloudflare bot detection
-        stealth = Stealth()
-        context = stealth.use_sync(browser.new_context())
+        # 1. Use standard Windows Chrome headers
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            extra_http_headers={"Authorization": f"Bearer {BEARER_TOKEN}"}
+        )
         
-        # Inject your Authorization token so the game knows who you are
-        context.set_extra_http_headers({"Authorization": f"Bearer {BEARER_TOKEN}"})
+        # 2. Inject JS to hide the bot flag (Bypasses Cloudflare)
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         page = context.new_page()
         
@@ -38,7 +37,6 @@ def main():
         try:
             page.goto("https://runiverseidle.com/forge", wait_until="domcontentloaded", timeout=60000)
             
-            # 1. Wait for Cloudflare to clear (Title changes from "Just a moment...")
             print("[*] Waiting for Cloudflare JS Challenge to solve (up to 20s)...")
             try:
                 page.wait_for_function("document.title !== 'Just a moment...'", timeout=20000)
@@ -49,7 +47,7 @@ def main():
             print("[*] Waiting 5s for game UI to render...")
             time.sleep(5)
             
-            # 2. Find all clickable elements and log them
+            # 3. Find all clickable elements and log them
             elements = page.query_selector_all("button, a, div[role='button'], .btn, .button")
             print(f"DEBUG -> Found {len(elements)} potential clickable elements.")
             
@@ -58,7 +56,7 @@ def main():
                 if text.strip():
                     print(f"DEBUG -> Element {i}: '{text.strip()}'")
             
-            # 3. Smart DOM scan for action buttons
+            # 4. Smart DOM scan for action buttons
             keywords = ["Craft", "Forge", "Gather", "Mine", "Start", "Claim"]
             action_taken = False
             
