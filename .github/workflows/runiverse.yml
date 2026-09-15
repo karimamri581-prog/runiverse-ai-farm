@@ -14,9 +14,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Playwright & Stealth
+      - name: Install Playwright
         run: |
-          pip install playwright playwright-stealth
+          pip install playwright
           python -m playwright install --with-deps chromium
       - name: Run Bot
         run: python runiverse_bot.py
