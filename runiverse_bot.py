@@ -9,8 +9,8 @@ from playwright.sync_api import sync_playwright
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Updated to the actual latest 2026 model
-LATEST_MODEL = "gemini-3.8-flash"
+# Try the latest 3.8 model, but we can fall back to 2.5 if Google is overloaded
+MODELS_TO_TRY = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
 SYSTEM_PROMPT = """You are an expert Web3 game bot playing Runiverse Idle.
 Your ONLY goal is to make money by following this loop: Gather -> Craft -> Sell.
@@ -27,19 +27,20 @@ Analyze the screen and decide the ONE best action to take right now.
 Reply ONLY with a JSON object: {"action": "exact text of button to click", "reason": "short reason"}"""
 
 class VisionGamer:
-    def __init__(self, page, client):
+    def __init__(self, page, client, model_name):
         self.page = page
         self.client = client
+        self.model_name = model_name
         
     def look_and_think(self):
         print("[📸 EYES] Taking screenshot of the game...")
         screenshot_bytes = self.page.screenshot()
         
-        print(f"[🧠 BRAIN] Sending image to Vision AI ({LATEST_MODEL}) for analysis...")
+        print(f"[🧠 BRAIN] Sending image to Vision AI ({self.model_name}) for analysis...")
         
         try:
             response = self.client.models.generate_content(
-                model=LATEST_MODEL,
+                model=self.model_name,
                 contents=[
                     types.Part.from_text(text=SYSTEM_PROMPT),
                     types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png")
@@ -94,14 +95,25 @@ def main():
         client = genai.Client(api_key=GEMINI_API_KEY)
         print("[+] Google GenAI Client initialized.")
         
-        print(f"[*] Testing Google Gemini API Key with {LATEST_MODEL}...")
-        test_response = client.models.generate_content(model=LATEST_MODEL, contents="Respond with 'OK'")
-        if "OK" not in test_response.text.upper():
-            raise Exception("API Key test failed.")
-        print("[+] Gemini API Key is valid! Proceeding.")
-        
+        # Test models to find one that isn't overloaded
+        active_model = None
+        for model in MODELS_TO_TRY:
+            print(f"[*] Testing Google Gemini API Key with {model}...")
+            try:
+                test_response = client.models.generate_content(model=model, contents="Respond with 'OK'")
+                if "OK" in test_response.text.upper():
+                    print(f"[+] {model} is online and working!")
+                    active_model = model
+                    break
+            except Exception as e:
+                print(f"[-] {model} failed: {e}")
+                
+        if not active_model:
+            print("[-] FATAL: No available Gemini models right now. Try again later.")
+            return
+            
     except Exception as e:
-        print(f"[-] FATAL: Your Google Gemini API Key is invalid or model is unavailable.")
+        print(f"[-] FATAL: Client initialization failed.")
         print(f"[-] Error details: {e}")
         return
 
@@ -129,7 +141,7 @@ def main():
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            gamer = VisionGamer(page, client)
+            gamer = VisionGamer(page, client, active_model)
             
             while True:
                 target_button = gamer.look_and_think()
@@ -138,7 +150,7 @@ def main():
                     gamer.execute_click(target_button)
                     wait_time = 15
                 else:
-                    print("[-] AI couldn't decide. Waiting 30s.")
+                    print("[-] AI couldn't decide or API overloaded. Waiting 30s.")
                     wait_time = 30
                     
                 time.sleep(wait_time)
