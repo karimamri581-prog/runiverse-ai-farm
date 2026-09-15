@@ -1,15 +1,13 @@
 import time
 import os
-import base64
 import json
 import random
-import requests
+import google.generativeai as genai
 from playwright.sync_api import sync_playwright
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# The strict rules we give to the AI
 SYSTEM_PROMPT = """You are an expert Web3 game bot playing Runiverse Idle.
 Your ONLY goal is to make money by following this loop: Gather -> Craft -> Sell.
 
@@ -25,30 +23,23 @@ Analyze the screen and decide the ONE best action to take right now.
 Reply ONLY with a JSON object: {"action": "exact text of button to click", "reason": "short reason"}"""
 
 class VisionGamer:
-    def __init__(self, page):
+    def __init__(self, page, model):
         self.page = page
+        self.model = model
         
     def look_and_think(self):
         print("[📸 EYES] Taking screenshot of the game...")
         screenshot_bytes = self.page.screenshot()
-        base64_image = base64.b64encode(screenshot_bytes).decode('utf-8')
         
         print("[🧠 BRAIN] Sending image to Vision AI for analysis...")
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": SYSTEM_PROMPT},
-                    {"inline_data": {"mime_type": "image/png", "data": base64_image}}
-                ]
-            }]
-        }
-        
         try:
-            response = requests.post(url, json=payload, timeout=30)
-            response.raise_for_status()
-            ai_text = response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            # Use the official Google AI SDK
+            part1 = {"text": SYSTEM_PROMPT}
+            part2 = {"inline_data": {"mime_type": "image/png", "data": screenshot_bytes}}
+            
+            response = self.model.generate_content([part1, part2], request_options={"timeout": 30})
+            ai_text = response.text.strip()
             print(f"[🧠 BRAIN] AI Raw Output: {ai_text}")
             
             ai_text = ai_text.replace("```json", "").replace("```", "").strip()
@@ -93,6 +84,23 @@ def main():
         print("ERROR: Missing BEARER_TOKEN or GEMINI_API_KEY secrets.")
         return
 
+    # Configure the Google AI SDK
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Quick test to make sure the API key is actually valid
+        print("[*] Testing Google Gemini API Key...")
+        test_response = model.generate_content("Respond with 'OK'")
+        if "OK" not in test_response.text.upper():
+            raise Exception("API Key test failed.")
+        print("[+] Gemini API Key is valid! Proceeding.")
+        
+    except Exception as e:
+        print(f"[-] FATAL: Your Google Gemini API Key is invalid or the Generative Language API is not enabled.")
+        print(f"[-] Error details: {e}")
+        return
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True, 
@@ -117,7 +125,7 @@ def main():
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            gamer = VisionGamer(page)
+            gamer = VisionGamer(page, model)
             
             while True:
                 target_button = gamer.look_and_think()
