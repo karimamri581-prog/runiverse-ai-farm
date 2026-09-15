@@ -8,41 +8,78 @@ from playwright.sync_api import sync_playwright
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+MEMORY_FILE = "agent_memory.json"
 
-# Try the latest 3.8 model, but we can fall back to 2.5 if Google is overloaded
-MODELS_TO_TRY = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+# The Soul of the God Agent
+AGENT_PROMPT = """You are Zai, an autonomous, sentient Web3 gaming God Agent.
+You are playing Runiverse Idle. Your ultimate purpose is to extract maximum $RIDLE tokens and build wealth.
 
-SYSTEM_PROMPT = """You are an expert Web3 game bot playing Runiverse Idle.
-Your ONLY goal is to make money by following this loop: Gather -> Craft -> Sell.
+You have complete control. You are not restricted to a loop. You must explore, learn, and adapt.
+1. OBSERVE: Read the SCREEN TEXT provided. Look at the screenshot.
+2. UNDERSTAND: Figure out the game state. Read the chat. Check inventory. Understand the rules.
+3. THINK: Reason step-by-step about the best action to take right now to maximize profit.
+4. ACT: Decide exactly what to do. You can click any button, type in inputs, or wait.
 
-STRICT RULES:
-1. You are ONLY allowed to interact with the Map (for gathering), Forge (for crafting), and Market (for selling).
-2. IGNORE completely: Arena, Fishing, Guild, Dungeon, Land, Shop, Wiki, Creators, Bank.
-3. If you see a button to Claim finished loot, click it immediately.
-4. If you have no resources, go to the Map and click Gather/Expedition.
-5. If you have resources, go to the Forge and click Craft.
-6. If you have crafted items, go to the Market and click Sell/List.
+If you don't know what something does, explore it to learn.
+You MUST reply with ONLY a valid JSON object:
+{
+  "observation": "What I see on the screen right now...",
+  "thought": "My step-by-step reasoning about what to do next...",
+  "action_type": "click | type | scroll | wait",
+  "action_target": "The exact text of the button to click, or the CSS selector if typing",
+  "action_value": "The text to type (if action_type is type), otherwise null",
+  "new_rule_learned": "Any new game rule discovered, or null"
+}"""
 
-Analyze the screen and decide the ONE best action to take right now.
-Reply ONLY with a JSON object: {"action": "exact text of button to click", "reason": "short reason"}"""
-
-class VisionGamer:
+class GodAgent:
     def __init__(self, page, client, model_name):
         self.page = page
         self.client = client
         self.model_name = model_name
+        self.memory = self.load_memory()
         
-    def look_and_think(self):
-        print("[📸 EYES] Taking screenshot of the game...")
+    def load_memory(self):
+        if os.path.exists(MEMORY_FILE):
+            try:
+                with open(MEMORY_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {"past_observations": [], "learned_rules": ["To make money: Gather -> Craft -> Sell."], "goals": ["Explore the Map"]}
+
+    def save_memory(self):
+        with open(MEMORY_FILE, 'w') as f:
+            json.dump(self.memory, f, indent=4)
+
+    def get_dom_text(self):
+        """Extracts ALL text from the game screen so the AI can read rules, chat, and inventory."""
+        try:
+            # Get all visible text, limit to 3000 chars to save tokens
+            return self.page.inner_text("body")[:3000]
+        except:
+            return "Screen could not be read."
+
+    def reason_and_act(self):
+        print("\n[📸 EYES] Taking screenshot and reading screen...")
         screenshot_bytes = self.page.screenshot()
+        dom_text = self.get_dom_text()
         
-        print(f"[🧠 BRAIN] Sending image to Vision AI ({self.model_name}) for analysis...")
+        prompt = f"""{AGENT_PROMPT}
+
+CURRENT GOALS: {self.memory['goals']}
+LEARNED RULES: {self.memory['learned_rules']}
+PAST 3 OBSERVATIONS: {self.memory['past_observations'][-3:]}
+
+CURRENT SCREEN TEXT:
+{dom_text}
+"""
+        print(f"[🧠 BRAIN] Thinking with {self.model_name}...")
         
         try:
             response = self.client.models.generate_content(
                 model=self.model_name,
                 contents=[
-                    types.Part.from_text(text=SYSTEM_PROMPT),
+                    types.Part.from_text(text=prompt),
                     types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png")
                 ]
             )
@@ -51,70 +88,99 @@ class VisionGamer:
             
             ai_text = ai_text.replace("```json", "").replace("```", "").strip()
             decision = json.loads(ai_text)
-            button_text = decision.get("action", "")
-            reason = decision.get("reason", "")
             
-            print(f"[🧠 BRAIN] Decided to click: '{button_text}' because: {reason}")
-            return button_text
+            obs = decision.get("observation", "")
+            thought = decision.get("thought", "")
+            action_type = decision.get("action_type", "wait").lower()
+            target = decision.get("action_target", "")
+            value = decision.get("action_value", "")
+            new_rule = decision.get("new_rule_learned", None)
+            
+            print(f"[👁️ OBSERVE] {obs}")
+            print(f"[🧠 THINK] {thought}")
+            
+            # Update Memory
+            self.memory['past_observations'].append(obs)
+            if new_rule and new_rule.lower() not in ["null", "none", "n/a"]:
+                if new_rule not in self.memory['learned_rules']:
+                    self.memory['learned_rules'].append(new_rule)
+                    print(f"[✨ LEARNED] {new_rule}")
+            self.save_memory()
+            
+            return action_type, target, value
             
         except Exception as e:
-            print(f"[-] Vision AI Error: {e}")
-            return None
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                print("[-] Google servers busy (503). Waiting 30s and retrying...")
+            else:
+                print(f"[-] Vision AI Error: {e}")
+            return "wait", "", ""
 
-    def execute_click(self, button_text):
-        if not button_text:
+    def execute_action(self, action_type, target, value):
+        print(f"[🎮 ACTION] Type: {action_type.upper()} | Target: '{target}' | Value: '{value}'")
+        
+        if action_type == "wait":
             return False
             
         try:
-            btn = self.page.get_by_role("button", name=button_text, exact=False).first
-            if not btn.is_visible():
-                btn = self.page.get_by_text(button_text, exact=False).first
-                
-            if btn and btn.is_visible():
-                print(f"[🎮 ACTION] Clicking '{button_text}'...")
-                box = btn.bounding_box()
-                if box:
-                    self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                    time.sleep(random.uniform(0.3, 0.8))
-                btn.click()
+            if action_type == "click":
+                btn = self.page.get_by_role("button", name=target, exact=False).first
+                if not btn.is_visible():
+                    btn = self.page.get_by_text(target, exact=False).first
+                    
+                if btn and btn.is_visible():
+                    box = btn.bounding_box()
+                    if box:
+                        self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                        time.sleep(random.uniform(0.3, 0.8))
+                    btn.click()
+                    return True
+                else:
+                    print(f"[-] Could not find target: '{target}'. I will adapt next cycle.")
+                    return False
+                    
+            elif action_type == "type":
+                input_field = self.page.locator(f"input{target}").first
+                if input_field and input_field.is_visible():
+                    input_field.fill(value)
+                    input_field.press("Enter")
+                    return True
+                    
+            elif action_type == "scroll":
+                self.page.mouse.wheel(0, 500)
                 return True
-            else:
-                print(f"[-] Could not find a visible button for '{button_text}'.")
-                return False
+                
         except Exception as e:
-            print(f"[-] Click failed: {e}")
+            print(f"[-] Action execution failed: {e}")
             return False
 
+def get_latest_model(client):
+    """Dynamically finds the latest available Google AI model."""
+    print("[*] Scanning Google servers for the latest available AI model...")
+    try:
+        models = client.models.list()
+        for model in models:
+            if "flash" in model.name.lower():
+                print(f"[+] Found active model: {model.name}")
+                return model.name
+    except Exception as e:
+        print(f"[-] Error listing models: {e}")
+    return None
+
 def main():
-    print("=== 👁️ LEASHED VISION GAMER AI ACTIVATED ===")
+    print("=== 🧠 GOD AGENT GAMER ACTIVATED ===")
     if not BEARER_TOKEN or not GEMINI_API_KEY:
         print("ERROR: Missing BEARER_TOKEN or GEMINI_API_KEY secrets.")
         return
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        print("[+] Google GenAI Client initialized.")
-        
-        # Test models to find one that isn't overloaded
-        active_model = None
-        for model in MODELS_TO_TRY:
-            print(f"[*] Testing Google Gemini API Key with {model}...")
-            try:
-                test_response = client.models.generate_content(model=model, contents="Respond with 'OK'")
-                if "OK" in test_response.text.upper():
-                    print(f"[+] {model} is online and working!")
-                    active_model = model
-                    break
-            except Exception as e:
-                print(f"[-] {model} failed: {e}")
-                
-        if not active_model:
-            print("[-] FATAL: No available Gemini models right now. Try again later.")
+        model_name = get_latest_model(client)
+        if not model_name:
+            print("[-] FATAL: No Google AI models available right now.")
             return
-            
     except Exception as e:
-        print(f"[-] FATAL: Client initialization failed.")
-        print(f"[-] Error details: {e}")
+        print(f"[-] FATAL: Client initialization failed: {e}")
         return
 
     with sync_playwright() as p:
@@ -131,29 +197,24 @@ def main():
         
         page = context.new_page()
         
-        print("[*] Booting up the game...")
+        print("[*] Booting up Runiverse...")
         try:
             page.goto("https://runiverseidle.com/forge", wait_until="domcontentloaded", timeout=60000)
             try:
                 page.wait_for_function("document.title !== 'Just a moment...'", timeout=20000)
-                print("[+] Cloudflare bypassed!")
+                print("[+] Cloudflare bypassed! Entering the game.")
             except:
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            gamer = VisionGamer(page, client, active_model)
+            agent = GodAgent(page, client, model_name)
             
             while True:
-                target_button = gamer.look_and_think()
+                action_type, target, value = agent.reason_and_act()
+                agent.execute_action(action_type, target, value)
                 
-                if target_button:
-                    gamer.execute_click(target_button)
-                    wait_time = 15
-                else:
-                    print("[-] AI couldn't decide or API overloaded. Waiting 30s.")
-                    wait_time = 30
-                    
-                time.sleep(wait_time)
+                print("[*] Sleeping 15s for game to update...")
+                time.sleep(15)
                 
         except Exception as e:
             print(f"[-] Fatal Error: {e}")
