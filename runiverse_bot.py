@@ -2,7 +2,8 @@ import time
 import os
 import json
 import random
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from playwright.sync_api import sync_playwright
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
@@ -23,9 +24,9 @@ Analyze the screen and decide the ONE best action to take right now.
 Reply ONLY with a JSON object: {"action": "exact text of button to click", "reason": "short reason"}"""
 
 class VisionGamer:
-    def __init__(self, page, model):
+    def __init__(self, page, client):
         self.page = page
-        self.model = model
+        self.client = client
         
     def look_and_think(self):
         print("[📸 EYES] Taking screenshot of the game...")
@@ -34,11 +35,13 @@ class VisionGamer:
         print("[🧠 BRAIN] Sending image to Vision AI for analysis...")
         
         try:
-            # Use the official Google AI SDK
-            part1 = {"text": SYSTEM_PROMPT}
-            part2 = {"inline_data": {"mime_type": "image/png", "data": screenshot_bytes}}
-            
-            response = self.model.generate_content([part1, part2], request_options={"timeout": 30})
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_text(text=SYSTEM_PROMPT),
+                    types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png")
+                ]
+            )
             ai_text = response.text.strip()
             print(f"[🧠 BRAIN] AI Raw Output: {ai_text}")
             
@@ -84,20 +87,18 @@ def main():
         print("ERROR: Missing BEARER_TOKEN or GEMINI_API_KEY secrets.")
         return
 
-    # Configure the Google AI SDK
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("[+] Google GenAI Client initialized.")
         
-        # Quick test to make sure the API key is actually valid
         print("[*] Testing Google Gemini API Key...")
-        test_response = model.generate_content("Respond with 'OK'")
+        test_response = client.models.generate_content(model="gemini-2.0-flash", contents="Respond with 'OK'")
         if "OK" not in test_response.text.upper():
             raise Exception("API Key test failed.")
         print("[+] Gemini API Key is valid! Proceeding.")
         
     except Exception as e:
-        print(f"[-] FATAL: Your Google Gemini API Key is invalid or the Generative Language API is not enabled.")
+        print(f"[-] FATAL: Your Google Gemini API Key is invalid.")
         print(f"[-] Error details: {e}")
         return
 
@@ -125,7 +126,7 @@ def main():
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            gamer = VisionGamer(page, model)
+            gamer = VisionGamer(page, client)
             
             while True:
                 target_button = gamer.look_and_think()
