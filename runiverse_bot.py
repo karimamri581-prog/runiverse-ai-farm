@@ -52,20 +52,38 @@ class LivingAgent:
         with open(MEMORY_FILE, 'w') as f:
             json.dump(self.memory, f, indent=4)
 
+    def spinal_reflex(self):
+        """Instant reflexes to close popups without needing the AI brain."""
+        print("[⚡ REFLEX] Scanning for UI blockers...")
+        try:
+            # Look for close buttons, X icons, or "Play as Guest"
+            blockers = [
+                self.page.locator("button:has-text('X')"),
+                self.page.locator("button:has-text('Close')"),
+                self.page.locator("[aria-label='Close']"),
+                self.page.locator("button:has-text('Play as Guest')"),
+                self.page.locator("svg.close")
+            ]
+            for blocker in blockers:
+                if blocker.first.is_visible():
+                    print("[⚡ REFLEX] Found a popup! Closing it instantly.")
+                    blocker.first.click()
+                    time.sleep(2)
+                    return True
+        except:
+            pass
+        return False
+
     def perceive(self):
-        """The Agent's Eyes. Takes a screenshot and reads all text on the screen."""
         print("\n[📸 EYES] Perceiving the environment...")
         screenshot_bytes = self.page.screenshot()
         try:
-            # Read all text on the screen so the AI can read chat, rules, and inventory
             screen_text = self.page.inner_text("body")[:3000]
         except:
             screen_text = "Screen is blank."
-            
         return screenshot_bytes, screen_text
         
     def think_and_act(self, screenshot_bytes, screen_text):
-        """The Agent's Mind. Analyzes the perception and decides what to do."""
         print("[🧠 BRAIN] Thinking...")
         
         prompt = f"""{LIVING_PROMPT}
@@ -100,7 +118,6 @@ CURRENT SCREEN TEXT:
             print(f"[👁️ OBSERVE] {obs}")
             print(f"[🧠 THINK] {thought}")
             
-            # Update Memory
             self.memory['past_observations'].append(obs)
             if new_rule and new_rule.lower() not in ["null", "none", "n/a"]:
                 if new_rule not in self.memory['learned_rules']:
@@ -108,17 +125,20 @@ CURRENT SCREEN TEXT:
                     print(f"[✨ LEARNED] {new_rule}")
             self.save_memory()
             
-            return action_type, target
+            return action_type, target, 60 # 60-second wait to respect Google API limits
             
         except Exception as e:
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print("[-] Google API Rate Limit (429). Waiting 60s for quota to reset...")
+                return "wait", "", 60
+            elif "503" in str(e) or "UNAVAILABLE" in str(e):
                 print("[-] Google servers busy (503). Waiting 30s and retrying...")
+                return "wait", "", 30
             else:
                 print(f"[-] Vision AI Error: {e}")
-            return "wait", ""
+                return "wait", "", 30
 
     def execute(self, action_type, target):
-        """The Agent's Hands. Executes the action with human-like precision."""
         print(f"[🎮 ACTION] Type: {action_type.upper()} | Target: '{target}'")
         
         if action_type == "wait":
@@ -126,7 +146,6 @@ CURRENT SCREEN TEXT:
             
         try:
             if action_type == "click":
-                # Search by role, then text, then aria-label, then class
                 locators = [
                     self.page.get_by_role("button", name=target, exact=False),
                     self.page.get_by_text(target, exact=False),
@@ -190,7 +209,6 @@ def main():
             extra_http_headers={"Authorization": f"Bearer {BEARER_TOKEN}"}
         )
         
-        # Inject token to auto-login
         context.add_init_script(f"""
             window.localStorage.setItem('token', '{BEARER_TOKEN}');
             window.localStorage.setItem('authToken', '{BEARER_TOKEN}');
@@ -213,17 +231,20 @@ def main():
             
             # The Infinite Life Loop
             while True:
-                # 1. Perceive (See and Read)
+                # 1. Spinal Reflex (Instantly close popups/logins without AI)
+                agent.spinal_reflex()
+                
+                # 2. Perceive (See and Read)
                 screenshot, text = agent.perceive()
                 
-                # 2. Think (Decide what to do)
-                action_type, target = agent.think_and_act(screenshot, text)
+                # 3. Think (Decide what to do) -> Returns action and wait_time
+                action_type, target, wait_time = agent.think_and_act(screenshot, text)
                 
-                # 3. Act (Execute the decision)
+                # 4. Act (Execute the decision)
                 agent.execute(action_type, target)
                 
-                print("[*] Sleeping 10s for game to update...")
-                time.sleep(10)
+                print(f"[*] Sleeping {wait_time}s for game to update and respect API limits...")
+                time.sleep(wait_time)
                 
         except Exception as e:
             print(f"[-] Fatal Error: {e}")
