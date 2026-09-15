@@ -1,13 +1,13 @@
-name: Runiverse Stealth Farm
+name: Runiverse 24/7 Gamer
 on:
   schedule:
-    - cron: "*/30 * * * *" # Runs every 30 minutes
+    - cron: "0 * * * *" # Runs every hour automatically
   workflow_dispatch:
 
 jobs:
   farm:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350 # Runs for 5.5 hours straight
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -18,7 +18,7 @@ jobs:
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Run Bot
+      - name: Run Gamer Bot
         run: python runiverse_bot.py
         env:
           BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
