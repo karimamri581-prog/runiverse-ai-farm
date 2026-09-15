@@ -10,7 +10,9 @@ BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MEMORY_FILE = "agent_memory.json"
 
-# The Soul of the God Agent
+# Hardcoded to the exact model Google told us to use
+LATEST_MODEL = "gemini-3.6-flash"
+
 AGENT_PROMPT = """You are Zai, an autonomous, sentient Web3 gaming God Agent.
 You are playing Runiverse Idle. Your ultimate purpose is to extract maximum $RIDLE tokens and build wealth.
 
@@ -54,7 +56,6 @@ class GodAgent:
     def get_dom_text(self):
         """Extracts ALL text from the game screen so the AI can read rules, chat, and inventory."""
         try:
-            # Get all visible text, limit to 3000 chars to save tokens
             return self.page.inner_text("body")[:3000]
         except:
             return "Screen could not be read."
@@ -99,7 +100,6 @@ CURRENT SCREEN TEXT:
             print(f"[👁️ OBSERVE] {obs}")
             print(f"[🧠 THINK] {thought}")
             
-            # Update Memory
             self.memory['past_observations'].append(obs)
             if new_rule and new_rule.lower() not in ["null", "none", "n/a"]:
                 if new_rule not in self.memory['learned_rules']:
@@ -154,19 +154,6 @@ CURRENT SCREEN TEXT:
             print(f"[-] Action execution failed: {e}")
             return False
 
-def get_latest_model(client):
-    """Dynamically finds the latest available Google AI model."""
-    print("[*] Scanning Google servers for the latest available AI model...")
-    try:
-        models = client.models.list()
-        for model in models:
-            if "flash" in model.name.lower():
-                print(f"[+] Found active model: {model.name}")
-                return model.name
-    except Exception as e:
-        print(f"[-] Error listing models: {e}")
-    return None
-
 def main():
     print("=== 🧠 GOD AGENT GAMER ACTIVATED ===")
     if not BEARER_TOKEN or not GEMINI_API_KEY:
@@ -175,10 +162,7 @@ def main():
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        model_name = get_latest_model(client)
-        if not model_name:
-            print("[-] FATAL: No Google AI models available right now.")
-            return
+        print(f"[+] Google GenAI Client initialized with {LATEST_MODEL}.")
     except Exception as e:
         print(f"[-] FATAL: Client initialization failed: {e}")
         return
@@ -207,7 +191,7 @@ def main():
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            agent = GodAgent(page, client, model_name)
+            agent = GodAgent(page, client, LATEST_MODEL)
             
             while True:
                 action_type, target, value = agent.reason_and_act()
