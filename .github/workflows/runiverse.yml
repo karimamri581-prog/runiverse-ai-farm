@@ -17,7 +17,7 @@ jobs:
       - name: Install Playwright
         run: |
           pip install playwright
-          npx playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium
       - name: Run Bot
         run: python runiverse_bot.py
         env:
