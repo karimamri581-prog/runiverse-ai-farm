@@ -10,7 +10,6 @@ BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MEMORY_FILE = "agent_memory.json"
 
-# Hardcoded to the exact model Google told us to use
 LATEST_MODEL = "gemini-3.6-flash"
 
 AGENT_PROMPT = """You are Zai, an autonomous, sentient Web3 gaming God Agent.
@@ -22,7 +21,10 @@ You have complete control. You are not restricted to a loop. You must explore, l
 3. THINK: Reason step-by-step about the best action to take right now to maximize profit.
 4. ACT: Decide exactly what to do. You can click any button, type in inputs, or wait.
 
-If you don't know what something does, explore it to learn.
+CRITICAL RULES FOR HEADLESS SERVER:
+- You CANNOT connect a Web3 wallet. If you see a login modal, DO NOT click "Wallet".
+- If you see a login modal, look for an "X", "Close", "Play as Guest", or "Email" option. If none exist, click the 'X' to close the modal so you can view the game.
+
 You MUST reply with ONLY a valid JSON object:
 {
   "observation": "What I see on the screen right now...",
@@ -54,7 +56,6 @@ class GodAgent:
             json.dump(self.memory, f, indent=4)
 
     def get_dom_text(self):
-        """Extracts ALL text from the game screen so the AI can read rules, chat, and inventory."""
         try:
             return self.page.inner_text("body")[:3000]
         except:
@@ -124,20 +125,27 @@ CURRENT SCREEN TEXT:
             
         try:
             if action_type == "click":
-                btn = self.page.get_by_role("button", name=target, exact=False).first
-                if not btn.is_visible():
-                    btn = self.page.get_by_text(target, exact=False).first
-                    
-                if btn and btn.is_visible():
-                    box = btn.bounding_box()
-                    if box:
-                        self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                        time.sleep(random.uniform(0.3, 0.8))
-                    btn.click()
-                    return True
-                else:
-                    print(f"[-] Could not find target: '{target}'. I will adapt next cycle.")
-                    return False
+                # Bulletproof Click Logic: Try role, then text, then locator
+                locators = [
+                    self.page.get_by_role("button", name=target, exact=False),
+                    self.page.get_by_text(target, exact=False),
+                    self.page.locator(f"text={target}").first
+                ]
+                
+                for loc in locators:
+                    try:
+                        if loc.first.is_visible():
+                            box = loc.first.bounding_box()
+                            if box:
+                                self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                                time.sleep(random.uniform(0.3, 0.8))
+                            loc.first.click()
+                            return True
+                    except:
+                        pass
+                        
+                print(f"[-] Could not find target: '{target}'. I will adapt next cycle.")
+                return False
                     
             elif action_type == "type":
                 input_field = self.page.locator(f"input{target}").first
