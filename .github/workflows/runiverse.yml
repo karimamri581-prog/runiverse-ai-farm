@@ -1,4 +1,4 @@
-name: Runiverse Auto-Farm
+name: Runiverse Stealth Farm
 on:
   schedule:
     - cron: "*/30 * * * *" # Runs every 30 minutes
@@ -14,12 +14,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Playwright
+      - name: Install Playwright & Stealth
         run: |
-          pip install playwright
+          pip install playwright playwright-stealth
           python -m playwright install --with-deps chromium
       - name: Run Bot
         run: python runiverse_bot.py
         env:
           BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
-          CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
