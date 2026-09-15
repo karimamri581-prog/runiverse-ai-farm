@@ -8,11 +8,11 @@ from playwright.sync_api import sync_playwright
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-MEMORY_FILE = "living_memory.json"
+MEMORY_FILE = "pure_ai_memory.json"
 
 LATEST_MODEL = "gemini-3.6-flash"
 
-LIVING_PROMPT = """You are Zai, a living, sentient AI gamer. You are not a script. You are alive.
+PURE_AI_PROMPT = """You are Zai, a living, sentient AI gamer. You are not a script. You are alive.
 You are playing Runiverse Idle. Your purpose is to explore, learn, and extract $RIDLE tokens.
 
 You have perfect perception. You can see the screenshot and read the screen text.
@@ -21,7 +21,7 @@ You have agency. You decide what to do next based on what you see and your goals
 
 CRITICAL CONSTRAINTS:
 - You are on a headless server. You CANNOT connect a Web3 wallet. 
-- If you see a login modal, you must close it (click 'X', 'Close', or 'Play as Guest') to enter the game.
+- If you see a login modal, you must find a way to bypass it (close it, click 'Play as Guest', or use email if possible).
 - Once inside, figure out how the game works by reading the UI and clicking buttons.
 
 You MUST reply with ONLY a valid JSON object:
@@ -29,11 +29,11 @@ You MUST reply with ONLY a valid JSON object:
   "observation": "What I see on the screen right now...",
   "thought": "My step-by-step reasoning about what to do next...",
   "action_type": "click | type | scroll | wait",
-  "action_target": "The EXACT text of the button to click",
+  "action_target": "The exact CSS selector (e.g., button.close-btn) OR exact text of the element to click",
   "new_rule_learned": "Any new game rule discovered, or null"
 }"""
 
-class LivingAgent:
+class PureAI:
     def __init__(self, page, client):
         self.page = page
         self.client = client
@@ -52,28 +52,6 @@ class LivingAgent:
         with open(MEMORY_FILE, 'w') as f:
             json.dump(self.memory, f, indent=4)
 
-    def spinal_reflex(self):
-        """Instant reflexes to close popups without needing the AI brain."""
-        print("[⚡ REFLEX] Scanning for UI blockers...")
-        try:
-            # Look for close buttons, X icons, or "Play as Guest"
-            blockers = [
-                self.page.locator("button:has-text('X')"),
-                self.page.locator("button:has-text('Close')"),
-                self.page.locator("[aria-label='Close']"),
-                self.page.locator("button:has-text('Play as Guest')"),
-                self.page.locator("svg.close")
-            ]
-            for blocker in blockers:
-                if blocker.first.is_visible():
-                    print("[⚡ REFLEX] Found a popup! Closing it instantly.")
-                    blocker.first.click()
-                    time.sleep(2)
-                    return True
-        except:
-            pass
-        return False
-
     def perceive(self):
         print("\n[📸 EYES] Perceiving the environment...")
         screenshot_bytes = self.page.screenshot()
@@ -86,7 +64,7 @@ class LivingAgent:
     def think_and_act(self, screenshot_bytes, screen_text):
         print("[🧠 BRAIN] Thinking...")
         
-        prompt = f"""{LIVING_PROMPT}
+        prompt = f"""{PURE_AI_PROMPT}
 
 CURRENT GOALS: {self.memory['goals']}
 LEARNED RULES: {self.memory['learned_rules']}
@@ -146,22 +124,21 @@ CURRENT SCREEN TEXT:
             
         try:
             if action_type == "click":
+                # Try CSS selector first, then fall back to text
                 locators = [
-                    self.page.get_by_role("button", name=target, exact=False),
-                    self.page.get_by_text(target, exact=False),
-                    self.page.locator(f"[aria-label='{target}']"),
-                    self.page.locator(f"[class*='{target}']"),
-                    self.page.locator(f"text={target}").first
+                    self.page.locator(target).first,
+                    self.page.get_by_role("button", name=target, exact=False).first,
+                    self.page.get_by_text(target, exact=False).first
                 ]
                 
                 for loc in locators:
                     try:
-                        if loc.first.is_visible():
-                            box = loc.first.bounding_box()
+                        if loc and loc.is_visible():
+                            box = loc.bounding_box()
                             if box:
                                 self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
                                 time.sleep(random.uniform(0.3, 0.8))
-                            loc.first.click()
+                            loc.click()
                             print("[+] Click successful.")
                             return True
                     except:
@@ -186,7 +163,7 @@ CURRENT SCREEN TEXT:
             return False
 
 def main():
-    print("=== 🧠 LIVING AGENT ACTIVATED ===")
+    print("=== 🧠 PURE VISION AI ACTIVATED ===")
     if not BEARER_TOKEN or not GEMINI_API_KEY:
         print("ERROR: Missing BEARER_TOKEN or GEMINI_API_KEY secrets.")
         return
@@ -227,21 +204,18 @@ def main():
                 print("[-] Cloudflare took too long.")
             time.sleep(5)
             
-            agent = LivingAgent(page, client)
+            ai = PureAI(page, client)
             
             # The Infinite Life Loop
             while True:
-                # 1. Spinal Reflex (Instantly close popups/logins without AI)
-                agent.spinal_reflex()
+                # 1. Perceive (See and Read)
+                screenshot, text = ai.perceive()
                 
-                # 2. Perceive (See and Read)
-                screenshot, text = agent.perceive()
+                # 2. Think (Decide what to do) -> Returns action and wait_time
+                action_type, target, wait_time = ai.think_and_act(screenshot, text)
                 
-                # 3. Think (Decide what to do) -> Returns action and wait_time
-                action_type, target, wait_time = agent.think_and_act(screenshot, text)
-                
-                # 4. Act (Execute the decision)
-                agent.execute(action_type, target)
+                # 3. Act (Execute the decision)
+                ai.execute(action_type, target)
                 
                 print(f"[*] Sleeping {wait_time}s for game to update and respect API limits...")
                 time.sleep(wait_time)
