@@ -16,7 +16,7 @@ jobs:
           python-version: '3.11'
       - name: Install Dependencies
         run: |
-          pip install playwright requests google-generativeai
+          pip install playwright requests google-genai
           python -m playwright install --with-deps chromium
       - name: Run Gamer AI
         run: python runiverse_bot.py
