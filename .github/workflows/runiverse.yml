@@ -14,9 +14,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Playwright & Requests
+      - name: Install Dependencies
         run: |
-          pip install playwright requests
+          pip install playwright requests google-generativeai
           python -m playwright install --with-deps chromium
       - name: Run Gamer AI
         run: python runiverse_bot.py
