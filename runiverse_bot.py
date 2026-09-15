@@ -9,6 +9,9 @@ from playwright.sync_api import sync_playwright
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Updated to the actual latest 2026 model
+LATEST_MODEL = "gemini-3.8-flash"
+
 SYSTEM_PROMPT = """You are an expert Web3 game bot playing Runiverse Idle.
 Your ONLY goal is to make money by following this loop: Gather -> Craft -> Sell.
 
@@ -32,11 +35,11 @@ class VisionGamer:
         print("[📸 EYES] Taking screenshot of the game...")
         screenshot_bytes = self.page.screenshot()
         
-        print("[🧠 BRAIN] Sending image to Vision AI for analysis...")
+        print(f"[🧠 BRAIN] Sending image to Vision AI ({LATEST_MODEL}) for analysis...")
         
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.0-flash",
+                model=LATEST_MODEL,
                 contents=[
                     types.Part.from_text(text=SYSTEM_PROMPT),
                     types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png")
@@ -91,14 +94,14 @@ def main():
         client = genai.Client(api_key=GEMINI_API_KEY)
         print("[+] Google GenAI Client initialized.")
         
-        print("[*] Testing Google Gemini API Key...")
-        test_response = client.models.generate_content(model="gemini-2.0-flash", contents="Respond with 'OK'")
+        print(f"[*] Testing Google Gemini API Key with {LATEST_MODEL}...")
+        test_response = client.models.generate_content(model=LATEST_MODEL, contents="Respond with 'OK'")
         if "OK" not in test_response.text.upper():
             raise Exception("API Key test failed.")
         print("[+] Gemini API Key is valid! Proceeding.")
         
     except Exception as e:
-        print(f"[-] FATAL: Your Google Gemini API Key is invalid.")
+        print(f"[-] FATAL: Your Google Gemini API Key is invalid or model is unavailable.")
         print(f"[-] Error details: {e}")
         return
 
