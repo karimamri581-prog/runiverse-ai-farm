@@ -7,40 +7,50 @@ import requests
 from playwright.sync_api import sync_playwright
 
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
-# Get a FREE API key from https://aistudio.google.com/app/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# The strict rules we give to the AI
+SYSTEM_PROMPT = """You are an expert Web3 game bot playing Runiverse Idle.
+Your ONLY goal is to make money by following this loop: Gather -> Craft -> Sell.
+
+STRICT RULES:
+1. You are ONLY allowed to interact with the Map (for gathering), Forge (for crafting), and Market (for selling).
+2. IGNORE completely: Arena, Fishing, Guild, Dungeon, Land, Shop, Wiki, Creators, Bank.
+3. If you see a button to Claim finished loot, click it immediately.
+4. If you have no resources, go to the Map and click Gather/Expedition.
+5. If you have resources, go to the Forge and click Craft.
+6. If you have crafted items, go to the Market and click Sell/List.
+
+Analyze the screen and decide the ONE best action to take right now.
+Reply ONLY with a JSON object: {"action": "exact text of button to click", "reason": "short reason"}"""
 
 class VisionGamer:
     def __init__(self, page):
         self.page = page
         
     def look_and_think(self):
-        """Takes a screenshot and asks the AI what to do."""
         print("[📸 EYES] Taking screenshot of the game...")
         screenshot_bytes = self.page.screenshot()
         base64_image = base64.b64encode(screenshot_bytes).decode('utf-8')
         
         print("[🧠 BRAIN] Sending image to Vision AI for analysis...")
         
-        # Call Google Gemini API
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": "You are an expert Web3 game bot. Look at this game screen. What is the most profitable action to take right now? (e.g. Gather, Craft, Claim, Sell). Reply ONLY with a JSON object: {\"action\": \"the exact text of the button to click\", \"reason\": \"why\"}"},
+                    {"text": SYSTEM_PROMPT},
                     {"inline_data": {"mime_type": "image/png", "data": base64_image}}
                 ]
             }]
         }
         
         try:
-            response = requests.post(url, json=payload, timeout=20)
+            response = requests.post(url, json=payload, timeout=30)
             response.raise_for_status()
             ai_text = response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-            print(f"[🧠 BRAIN] AI says: {ai_text}")
+            print(f"[🧠 BRAIN] AI Raw Output: {ai_text}")
             
-            # Parse the AI's response
-            # Clean up markdown formatting if present
             ai_text = ai_text.replace("```json", "").replace("```", "").strip()
             decision = json.loads(ai_text)
             button_text = decision.get("action", "")
@@ -54,15 +64,12 @@ class VisionGamer:
             return None
 
     def execute_click(self, button_text):
-        """Finds the button the AI told us to click and clicks it."""
         if not button_text:
             return False
             
         try:
-            # Try to find the button by the exact text the AI gave us
             btn = self.page.get_by_role("button", name=button_text, exact=False).first
             if not btn.is_visible():
-                # Fallback to any text on screen
                 btn = self.page.get_by_text(button_text, exact=False).first
                 
             if btn and btn.is_visible():
@@ -81,7 +88,7 @@ class VisionGamer:
             return False
 
 def main():
-    print("=== 👁️ VISION GAMER AI ACTIVATED ===")
+    print("=== 👁️ LEASHED VISION GAMER AI ACTIVATED ===")
     if not BEARER_TOKEN or not GEMINI_API_KEY:
         print("ERROR: Missing BEARER_TOKEN or GEMINI_API_KEY secrets.")
         return
@@ -112,15 +119,12 @@ def main():
             
             gamer = VisionGamer(page)
             
-            # The Infinite Vision Loop
             while True:
-                # 1. Look at the screen and think
                 target_button = gamer.look_and_think()
                 
-                # 2. Execute the action
                 if target_button:
                     gamer.execute_click(target_button)
-                    wait_time = 15 # Wait for animation
+                    wait_time = 15
                 else:
                     print("[-] AI couldn't decide. Waiting 30s.")
                     wait_time = 30
