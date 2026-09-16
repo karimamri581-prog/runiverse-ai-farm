@@ -721,10 +721,9 @@ class CognitiveCore:
                     continue
 
                 # INJECTED LOGIN LOGIC
-                if per.scene_tag == "gate" or (per.modal_elements and any("email" in el.text.lower() for el in per.modal_elements)):
-                    if await self.auto_login():
-                        per = await self.perceive()
-                        continue
+                if await self.auto_login():
+                    per = await self.perceive()
+                    continue
 
                 action = self.think(per)
                 act_start = time.time()
@@ -747,11 +746,25 @@ class CognitiveCore:
         self.log.info("going dormant after %d cycles", self.cycle)
 
     async def auto_login(self):
-        """Instantly logs in using hardcoded credentials."""
+        """Instantly logs in using hardcoded credentials. Opens the wallet modal first if needed."""
         try:
-            self.log.info("Login wall detected. Bypassing with Email login...")
+            # 1. Check if we are already seeing the Email input directly
+            email_input = self.page.locator("input[type='email'], input[name='email']").first
+            if await email_input.is_visible():
+                await email_input.fill(EMAIL)
+                await asyncio.sleep(0.5)
+                pass_input = self.page.locator("input[type='password'], input[name='password']").first
+                await pass_input.fill(PASSWORD)
+                await asyncio.sleep(0.5)
+                await pass_input.press("Enter")
+                self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
+                await asyncio.sleep(5)
+                return True
+
+            # 2. If not, look for an "Email" button to click
             email_btn = self.page.get_by_text("Email", exact=False).first
             if await email_btn.is_visible():
+                self.log.info("Login wall detected. Clicking Email option...")
                 await email_btn.click()
                 await asyncio.sleep(2)
                 
@@ -767,6 +780,36 @@ class CognitiveCore:
                 self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
                 await asyncio.sleep(5)
                 return True
+
+            # 3. If no Email button, click the "Wallet" or "Connect" button to open the modal
+            self.log.info("Looking for Connect/Wallet button to open login modal...")
+            connect_btn = self.page.get_by_role("button", name="Wallet", exact=False).first
+            if not await connect_btn.is_visible():
+                connect_btn = self.page.get_by_text("Connect", exact=False).first
+            
+            if await connect_btn.is_visible():
+                await connect_btn.click()
+                await asyncio.sleep(2)
+                # Now that the modal is open, look for the Email button again
+                email_btn = self.page.get_by_text("Email", exact=False).first
+                if await email_btn.is_visible():
+                    self.log.info("Login modal opened. Clicking Email option...")
+                    await email_btn.click()
+                    await asyncio.sleep(2)
+                    
+                    email_input = self.page.locator("input[type='email'], input[name='email']").first
+                    await email_input.fill(EMAIL)
+                    await asyncio.sleep(0.5)
+                    
+                    pass_input = self.page.locator("input[type='password'], input[name='password']").first
+                    await pass_input.fill(PASSWORD)
+                    await asyncio.sleep(0.5)
+                    
+                    await pass_input.press("Enter")
+                    self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
+                    await asyncio.sleep(5)
+                    return True
+
         except Exception as e:
             self.log.debug(f"auto_login check skipped: {e}")
         return False
