@@ -1,4 +1,4 @@
-name: DOM Playground Econ Agent
+name: Spatial Vision Agent
 on:
   schedule:
     - cron: "0 * * * *"
@@ -18,19 +18,21 @@ jobs:
           python-version: '3.11'
       - name: Install Dependencies
         run: |
-          pip install playwright
+          pip install playwright pillow
           python -m playwright install --with-deps chromium
-      - name: Run Playground Econ Agent
+      - name: Run Vision Agent
         run: |
-          python dom_playground_econ.py "https://runiverseidle.com/forge" \
-            --goal "log in; enter game" \
-            --field email=karimamri581@gmail.com \
-            --field password=Taetae1997*
+          python vision_agent.py "https://runiverseidle.com/forge" \
+            --provider gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GAME_EMAIL: "karimamri581@gmail.com"
+          GAME_PASSWORD: "Taetae1997*"
       - name: Save Agent Memory
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add playground_memory.json || echo "No memory file yet"
-          git commit -m "Save Playground Econ Memory" || echo "No changes to commit"
+          git add vision_memory.json || echo "No memory file yet"
+          git commit -m "Save Vision Agent Memory" || echo "No changes to commit"
           git push
