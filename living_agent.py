@@ -751,24 +751,7 @@ class CognitiveCore:
             # 1. Check if we are already seeing the Email input directly
             email_input = self.page.locator("input[type='email'], input[name='email']").first
             if await email_input.is_visible():
-                await email_input.fill(EMAIL)
-                await asyncio.sleep(0.5)
-                pass_input = self.page.locator("input[type='password'], input[name='password']").first
-                await pass_input.fill(PASSWORD)
-                await asyncio.sleep(0.5)
-                await pass_input.press("Enter")
-                self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
-                await asyncio.sleep(5)
-                return True
-
-            # 2. If not, look for an "Email" button to click
-            email_btn = self.page.get_by_text("Email", exact=False).first
-            if await email_btn.is_visible():
-                self.log.info("Login wall detected. Clicking Email option...")
-                await email_btn.click()
-                await asyncio.sleep(2)
-                
-                email_input = self.page.locator("input[type='email'], input[name='email']").first
+                self.log.info("Login modal visible. Typing credentials...")
                 await email_input.fill(EMAIL)
                 await asyncio.sleep(0.5)
                 
@@ -778,40 +761,70 @@ class CognitiveCore:
                 
                 await pass_input.press("Enter")
                 self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
-                await asyncio.sleep(5)
+                await asyncio.sleep(5) # Wait for game to load
                 return True
 
-            # 3. If no Email button, click the "Wallet" or "Connect" button to open the modal
-            self.log.info("Looking for Connect/Wallet button to open login modal...")
-            connect_btn = self.page.get_by_role("button", name="Wallet", exact=False).first
-            if not await connect_btn.is_visible():
-                connect_btn = self.page.get_by_text("Connect", exact=False).first
-            
-            if await connect_btn.is_visible():
-                await connect_btn.click()
-                await asyncio.sleep(2)
-                # Now that the modal is open, look for the Email button again
-                email_btn = self.page.get_by_text("Email", exact=False).first
+            # 2. If not, look for an "Email" button to click (sometimes it's hidden in the modal)
+            email_btn = self.page.locator("text=/Email/i").first
+            try:
                 if await email_btn.is_visible():
-                    self.log.info("Login modal opened. Clicking Email option...")
+                    self.log.info("Found 'Email' login option. Clicking it...")
                     await email_btn.click()
                     await asyncio.sleep(2)
                     
+                    # Now try to fill the inputs
                     email_input = self.page.locator("input[type='email'], input[name='email']").first
-                    await email_input.fill(EMAIL)
-                    await asyncio.sleep(0.5)
-                    
-                    pass_input = self.page.locator("input[type='password'], input[name='password']").first
-                    await pass_input.fill(PASSWORD)
-                    await asyncio.sleep(0.5)
-                    
-                    await pass_input.press("Enter")
-                    self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
-                    await asyncio.sleep(5)
-                    return True
+                    if await email_input.is_visible():
+                        await email_input.fill(EMAIL)
+                        await asyncio.sleep(0.5)
+                        
+                        pass_input = self.page.locator("input[type='password'], input[name='password']").first
+                        await pass_input.fill(PASSWORD)
+                        await asyncio.sleep(0.5)
+                        
+                        await pass_input.press("Enter")
+                        self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
+                        await asyncio.sleep(5)
+                        return True
+                    else:
+                        self.log.warning("Clicked Email, but no input appeared.")
+            except Exception:
+                pass # Email button not visible, move to step 3
+
+            # 3. If no Email button, click the "Wallet" or "Connect" button to open the modal
+            self.log.info("Looking for Connect/Wallet button to open login modal...")
+            connect_btn = self.page.locator("text=/Connect|Log in|Wallet|Sign in/i").first
+            try:
+                if await connect_btn.is_visible():
+                    await connect_btn.click()
+                    await asyncio.sleep(2)
+                    # Now that the modal is open, look for the Email button again
+                    email_btn = self.page.locator("text=/Email/i").first
+                    if await email_btn.is_visible():
+                        self.log.info("Login modal opened. Clicking Email option...")
+                        await email_btn.click()
+                        await asyncio.sleep(2)
+                        
+                        email_input = self.page.locator("input[type='email'], input[name='email']").first
+                        if await email_input.is_visible():
+                            await email_input.fill(EMAIL)
+                            await asyncio.sleep(0.5)
+                            
+                            pass_input = self.page.locator("input[type='password'], input[name='password']").first
+                            await pass_input.fill(PASSWORD)
+                            await asyncio.sleep(0.5)
+                            
+                            await pass_input.press("Enter")
+                            self.log.info(f"[✅ SUCCESS] Logged in as {EMAIL}.")
+                            await asyncio.sleep(5)
+                            return True
+            except Exception:
+                pass
 
         except Exception as e:
-            self.log.debug(f"auto_login check skipped: {e}")
+            # Don't spam logs if it's just a timeout
+            # self.log.debug(f"auto_login skipped: {e}")
+            pass
         return False
 
     async def perceive(self) -> Perception:
