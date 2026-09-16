@@ -190,7 +190,7 @@ def page_key(state: dict) -> str:
 def goal_key(subgoal: str) -> str:
     return "g_" + hashlib.sha1((subgoal or "").lower().encode()).hexdigest()[:8]
 
-def q(s: str, limit: int = 64) -> str:
+def q(s: str, limit: int = 5000) -> str:
     return json.dumps((s or "")[:limit])
 
 def _cmt(s) -> str:
@@ -522,7 +522,8 @@ class Reasoner:
             A('    try: await page.mouse.move(int(S["cx"]), int(S["cy"]), steps=6); await page.mouse.click(int(S["cx"]), int(S["cy"])); log("clicked via coords"); await wait(0.7); return {"ok": True, "how": "click:coords", "target": S.get("target_fp", "")}')
             A('    except Exception as e: last = "coords: " + str(e)[:120]; log(last)')
         A('    try:')
-        A('        if await js_click(%s, S["js_spec"]): log("clicked via js-dispatch"); await wait(0.7); return {"ok": True, "how": "click:js-dispatch", "target": S.get("target_fp", "")}')
+        # FIXED: Replaced the broken %s with actual tgt variable formatting
+        A('        if await js_click(%s, S["js_spec"]): log("clicked via js-dispatch"); await wait(0.7); return {"ok": True, "how": "click:js-dispatch", "target": S.get("target_fp", "")}' % tgt)
         A('    except Exception as e: last = "js: " + str(e)[:120]; log(last)')
         A('    return {"ok": False, "why": last, "how": "click:failed"}')
         return Plan(name, "\n".join(L), el_label(el)[:48], ctx=self._ctx_for(el), timeout=60.0, match=match)
@@ -568,7 +569,8 @@ class Reasoner:
 
     def _plan_challenge(self) -> Plan:
         polls = max(8, int(self.cfg.challenge_patience // 3))
-        L = ['async def strategy(page, ctx, log, S):', '    # plan: wait-out-challenge', '    for i in range(%d):' % polls, '        await wait(3.0)', '        try: st = await page.evaluate(%s)' % q(JS_CHALLENGE_CHECK), '        except Exception as e: log("poll error: " + str(e)[:80]); continue', '        log("poll " + str(i) + " title=" + st["t"][:40] + " cf=" + str(st["cf"]))', '        if ("just a moment" not in st["t"].lower()) and (not st["cf"]): await wait(1.0); return {"ok": True, "how": "challenge:cleared"}', '        try: await page.mouse.move(300 + (i * 37) % 400, 260 + (i * 23) % 200, steps=4)', '        except Exception: pass', '    return {"ok": False, "why": "challenge still present", "how": "challenge:persisted"}']
+        # FIXED: Replaced q(JS_CHALLENGE_CHECK) with json.dumps to avoid truncation
+        L = ['async def strategy(page, ctx, log, S):', '    # plan: wait-out-challenge', '    for i in range(%d):' % polls, '        await wait(3.0)', '        try: st = await page.evaluate(%s)' % json.dumps(JS_CHALLENGE_CHECK), '        except Exception as e: log("poll error: " + str(e)[:80]); continue', '        log("poll " + str(i) + " title=" + st["t"][:40] + " cf=" + str(st["cf"]))', '        if ("just a moment" not in st["t"].lower()) and (not st["cf"]): await wait(1.0); return {"ok": True, "how": "challenge:cleared"}', '        try: await page.mouse.move(300 + (i * 37) % 400, 260 + (i * 23) % 200, steps=4)', '        except Exception: pass', '    return {"ok": False, "why": "challenge still present", "how": "challenge:persisted"}']
         return Plan("wait-out-challenge", "\n".join(L), "cloudflare interstitial", ctx={}, timeout=float(polls * 3 + 20), match=0.0)
 
     def _plan_shake(self) -> Plan:
