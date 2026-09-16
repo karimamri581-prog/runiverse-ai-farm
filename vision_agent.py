@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-vision_agent.py (v1.1) -- a Spatial Vision-Agent that plays a Web3 game by
-LOOKING at it. Full rewrite of the DOM-scanner approach: decisions come from
-pixels, not from HTML text.
+vision_agent.py (v1.2) -- a Spatial Vision-Agent that plays a Web3 game by
+LOOKING at it. Decisions come from pixels, not from HTML text.
 
     ┌─────────────────┐   ┌──────────────────────────────┐   ┌────────────────┐
     │  CAPTURE        │──>│  SEE (local, free)           │──>│  ASK (VLM,     │
@@ -24,29 +23,34 @@ pixels, not from HTML text.
     └─────────────────┘   │  -> drives -> next goal          │
                           └──────────────────────────────────┘
 
-WHAT v1.1 FIXED (driven by the first GitHub Actions run):
-  * Gemini client: real error surfaces (no more "all models failed" mystery),
-    automatic model fallback chain (2.5-flash -> 2.0-flash -> 1.5-flash ->
-    1.5-pro), sticky on whichever model works. 4xx = BadConfig (switch model,
-    don't retry); 429 = RateLimited (honor Retry-After); 5xx = Transient.
-  * Boot selftest: a 5-second, 1-cent call that proves the API pipeline before
-    the game even loads. Fails loud with the actual provider error text.
-  * Blind mode no longer spams VETO: local picks are center-zone only, and
-    out-of-center exploration picks are typed as "nav" (they pass the policy
-    as navigation, not as fake primaries).
-  * Login rewritten: first tries to OPEN the login UI (a "Log in"/"Sign in"
-    button), then waits up to 45s for the form, fills email+password,
-    multi-stage (email -> continue -> password) aware. Always screenshots
-    shots/login_end.jpg so you can SEE what state it reached.
-  * Every VLM request saves its annotated screenshot to shots/ask_cNNNN.jpg
-    -> upload as a CI artifact and you can watch the agent's eyes.
-  * Dead-chip logic deduped (one log line, both scene-keyed and global keys
-    actually enforced in approve()).
-  * REFLECT region-diff now compares in page coordinates (was off by the
-    downscale factor on wide viewports).
-  * CI fonts (Liberation) added to the annotate font search; Pillow getdata
-    deprecation warnings silenced.
-  * --require-vlm flag: exit non-zero if the selftest fails (CI fail-fast).
+CHANGELOG
+  v1.2 (this file):
+    * LIVE MODEL DISCOVERY: at boot the Gemini client calls ListModels
+      (unbilled) and rebuilds its model chain from whatever the key can
+      actually reach today. Hardcoded model names are now a last-resort
+      fallback, not the plan -- Google's model sunsets can't break this
+      again (your 404s for 2.0/1.5/2.5-flash are exactly this failure).
+    * RUNTIME SELF-HEAL: when a 404 body says "update your code to use
+      models/X", X is parsed out and injected into the live chain.
+    * DIAGNOSIS-AWARE SELFTEST: 401/403 -> rotate key; 404s after
+      discovery -> egress problem; timeout -> network. The log now tells
+      you which of the three it is.
+    * max_output_tokens 2048 (thinking-tier models burn budget invisibly).
+  v1.1: real error surfaces, boot selftest, blind-mode center-zone picks,
+    login opens the login UI first + waits 45s for the form, annotated
+    screenshots to shots/, dead-chip dedup, reflect coordinate fix, CI
+    fonts, Pillow warning filter, --require-vlm.
+  v1.0: spatial vision engine -- annotated screenshots, chip snapping,
+    Spatial Policy veto, economic satisfaction, dead chips, scene cache.
+
+WHY THE TAB-LOOP IS STRUCTURALLY DEAD (five layers):
+  1. The VLM literally sees red NAV zones / green ACTION zone / grid / chips.
+  2. The Spatial Policy hard-vetoes any "primary" in a NAV zone while
+     center chips exist -- even if the model insists.
+  3. Satisfaction is economic (VLM observation deltas), never "URL changed".
+  4. Chips that produce zero pixel change go dead for 150 s.
+  5. Scene cache is keyed by (game-state, screenshot-hash); failures never
+     replay.
 
 GITHUB ACTIONS WORKFLOW (save as .github/workflows/farm.yml):
 
@@ -88,15 +92,6 @@ GITHUB ACTIONS WORKFLOW (save as .github/workflows/farm.yml):
                 vision_memory.json
               if-no-files-found: ignore
 
-WHY THE TAB-LOOP IS STRUCTURALLY DEAD (unchanged, five layers):
-  1. The VLM literally sees red NAV zones / green ACTION zone / grid / chips.
-  2. The Spatial Policy hard-vetoes any "primary" in a NAV zone while center
-     chips exist -- even if the model insists.
-  3. Satisfaction is economic (VLM observation deltas), never "URL changed".
-  4. Chips that produce zero pixel change go dead for 150 s.
-  5. Scene cache is keyed by (game-state, screenshot-hash); failures never
-     replay.
-
 ETHICS: burner wallet + testnet only; fund-moving native dialogs are denied
 by default; patience-only Cloudflare handling (a Turnstile wants a human --
 that's a --headed, persistent-profile problem, not a headless one).
@@ -134,7 +129,7 @@ from playwright.async_api import async_playwright
 warnings.filterwarnings("ignore", message=".*getdata.*",
                         category=DeprecationWarning)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ═══════════════════════ HARDCODED LOGIN (change me) ═════════════════════════
 
@@ -195,7 +190,7 @@ def parse_args() -> Config:
     ap.add_argument("--provider", choices=["auto", "gemini", "openai"],
                     default="auto")
     ap.add_argument("--model", default="",
-                    help="override default model (else auto-fallback chain)")
+                    help="pin a model (else: live discovery -> static chain)")
     ap.add_argument("--api-key", default="",
                     help="else $GEMINI_API_KEY / $GOOGLE_API_KEY / "
                          "$OPENAI_API_KEY")
@@ -538,24 +533,114 @@ class BadConfig(Exception):
 
 
 class GeminiVision:
+    """Gemini client with three layers of model resilience:
+       1. LIVE DISCOVERY at boot (ListModels, unbilled) -- the chain is
+          rebuilt from whatever the key can reach today.
+       2. STATIC CHAIN as fallback when discovery is blocked.
+       3. RUNTIME SELF-HEAL: 404 bodies recommending "use models/X" inject X
+          into the live chain immediately.
+    """
     NAME = "gemini"
-    FALLBACK_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash",
-                       "gemini-1.5-flash", "gemini-1.5-pro")
+    STATIC_CHAIN = ("gemini-2.5-flash", "gemini-2.0-flash",
+                    "gemini-1.5-flash", "gemini-1.5-pro")
+    _RECOMMEND_RE = re.compile(r"use\s+models/([A-Za-z0-9._\-]+)", re.I)
+    _EXCLUDE = ("embedding", "aqa", "imagen", "veo", "tts",
+                "image-generation", "learnlm", "-live", "audio", "gemma")
 
     def __init__(self, key: str, model: str):
         self.key = key
-        if model:
-            self.models = [model] + [m for m in self.FALLBACK_MODELS
-                                     if m != model]
-        else:
-            self.models = list(self.FALLBACK_MODELS)
+        self._explicit = bool(model)
+        self.models = [model] if model else list(self.STATIC_CHAIN)
         self.model = self.models[0]
+        self._log = logging.getLogger("vision-agent")
+
+    # ---------------- live model discovery (free, once at boot) -------------
+
+    def discover_models(self) -> list:
+        """ListModels is not billed, so we never have to trust a hardcoded
+        model name again. Returns a preference-ordered list of usable
+        models; [] on any failure (static chain + self-heal still stand)."""
+        url = ("https://generativelanguage.googleapis.com/v1beta/models"
+               "?pageSize=100")
+        names, token, pages = [], None, 0
+        try:
+            while pages < 3:
+                pages += 1
+                req = urllib.request.Request(
+                    url + (("&pageToken=" + token) if token else ""),
+                    headers={"x-goog-api-key": self.key}, method="GET")
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                for m in data.get("models") or []:
+                    name = (m.get("name") or "").replace("models/", "")
+                    if "generateContent" not in (m.get(
+                            "supportedGenerationMethods") or []):
+                        continue
+                    if any(bad in name.lower() for bad in self._EXCLUDE):
+                        continue
+                    if name:
+                        names.append(name)
+                token = data.get("nextPageToken")
+                if not token:
+                    break
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                body = ""
+            self._log.error("VISION | ListModels http %d (key problem?): %s",
+                            e.code, body)
+            return []
+        except Exception:
+            return []
+        names.sort(key=self._pref)
+        return names[:6]
+
+    @staticmethod
+    def _ver(name: str):
+        m = re.search(r"gemini-(\d+)(?:[.-](\d+))?", name)
+        return (int(m.group(1)), int(m.group(2) or 0)) if m else (0, 0)
+
+    @staticmethod
+    def _pref(n: str):
+        """Lower tuple = tried earlier. Flash tier first (fast+cheap for
+        vision), newest version first, penalize experiments/thinking."""
+        nl = n.lower()
+        v = GeminiVision._ver(n)
+        pen = 0
+        if "flash" in nl:
+            pen -= 100
+        elif "pro" in nl:
+            pen += 20
+        if "lite" in nl:
+            pen += 30
+        if "exp" in nl or "preview" in nl:
+            pen += 40
+        if "thinking" in nl:
+            pen += 50
+        if "latest" in nl:
+            pen -= 10                # auto-updating alias: trustworthy
+        return (pen, -v[0], -v[1])
+
+    def install_discovered(self, found: list):
+        if not found:
+            return
+        head = self.models[:1] if self._explicit else []
+        seen, merged = set(), []
+        for m in head + found + self.models:
+            if m not in seen:
+                seen.add(m)
+                merged.append(m)
+        self.models = merged
+        self.model = merged[0]
+
+    # ---------------- generation (with runtime self-heal) -------------------
 
     def _post(self, b64: str, prompt: str, model: str) -> str:
         body = {"contents": [{"role": "user", "parts": [
             {"text": prompt},
             {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
-            "generationConfig": {"temperature": 0.2, "max_output_tokens": 800,
+            "generationConfig": {"temperature": 0.2, "max_output_tokens": 2048,
                                  "response_mime_type": "application/json"}}
         req = urllib.request.Request(
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -589,23 +674,39 @@ class GeminiVision:
         for p in (cands[0].get("content") or {}).get("parts") or []:
             if p.get("text"):
                 return p["text"]
-        raise Transient("empty response")
+        raise Transient("empty response (thinking ate the token budget?)")
 
     def _ask_sync(self, jpeg_bytes: bytes, prompt: str) -> str:
         b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-        errors = []
-        for model in self.models:
+        errors, tried = [], set()
+        queue = list(self.models)
+        i = 0
+        while i < len(queue) and len(tried) < 8:
+            model = queue[i]
+            i += 1
+            if model in tried:
+                continue
+            tried.add(model)
             for attempt in (1, 2):
                 try:
                     out = self._post(b64, prompt, model)
                     if self.model != model:
-                        self.model = model       # sticky: lock onto it
+                        self.model = model          # sticky on what works
                     return out
                 except BadConfig as e:
-                    errors.append("%s -> %s" % (model, e))
-                    break                        # config error: next model
+                    msg = str(e)
+                    errors.append("%s -> %s" % (model, msg[:160]))
+                    # SELF-HEAL: Google's 404 named the replacement -- use it
+                    m = self._RECOMMEND_RE.search(msg)
+                    if m and m.group(1) not in tried \
+                            and m.group(1) not in queue:
+                        self._log.info("VISION | provider recommends %r; "
+                                       "injecting into the chain",
+                                       m.group(1))
+                        queue.insert(i, m.group(1))
+                    break                           # next model immediately
                 except Transient as e:
-                    errors.append("%s -> %s" % (model, e))
+                    errors.append("%s -> %s" % (model, str(e)[:160]))
                     if attempt == 1:
                         time.sleep(2.5)
         raise Transient("; ".join(errors[-3:]) or "no models tried")
@@ -629,7 +730,7 @@ class OpenAIVision:
         self.model = self.models[0]
 
     def _post(self, b64: str, prompt: str, model: str) -> str:
-        body = {"model": model, "max_tokens": 800, "temperature": 0.2,
+        body = {"model": model, "max_tokens": 2048, "temperature": 0.2,
                 "response_format": {"type": "json_object"},
                 "messages": [{"role": "user", "content": [
                     {"type": "text", "text": prompt},
@@ -711,6 +812,15 @@ def make_vision(cfg: Config, log: logging.Logger):
          else OpenAIVision(key, cfg.model))
     log.info("vision provider: %s | model chain: %s", v.NAME,
              " -> ".join(v.models))
+    if isinstance(v, GeminiVision):
+        found = v.discover_models()
+        if found:
+            v.install_discovered(found)
+            log.info("VISION | live discovery: %d usable models | chain now: "
+                     "%s", len(found), " -> ".join(v.models[:5]))
+        else:
+            log.warning("VISION | discovery failed; static chain + runtime "
+                        "self-heal remain")
     return v
 
 # ═════════════════ 4. DECISION PARSING & THE VLM PROMPT ═════════════════════
@@ -1076,8 +1186,8 @@ class Economy:
         self.craft_block = 0
 
     def to_dict(self):
-        return {"state": self.state, "obs": self.obs, "currency":
-                self.currency, "items": sorted(self.items),
+        return {"state": self.state, "obs": self.obs,
+                "currency": self.currency, "items": sorted(self.items),
                 "loop": self.loop, "loop_i": self.loop_i}
 
     def load(self, blob):
@@ -1267,7 +1377,7 @@ class Memory:
             self.cache.trim()
             dead = {k: v for k, v in self.dead.items()
                     if v.get("until", 0) > time.time() - 3600}
-            data = {"version": 2, "cache": self.cache.entries, "dead": dead,
+            data = {"version": 3, "cache": self.cache.entries, "dead": dead,
                     "econ": econ_blob, "stats": self.stats,
                     "sessions": self.sessions}
             tmp = self.path.with_suffix(".tmp")
@@ -1361,10 +1471,20 @@ class Agent:
                              "retry_after=%s)", e.retry_after)
         except Exception as e:
             self.vlm_ok = False
-            self.log.error("VISION | SELFTEST FAILED -> %s", str(e)[:400])
-            self.log.error("VISION | likely fixes: rotate the key / enable "
-                           "the Generative Language API / pass "
-                           "--model gemini-2.5-flash")
+            txt = str(e)
+            self.log.error("VISION | SELFTEST FAILED -> %s", txt[:400])
+            if "401" in txt or "403" in txt or "api key" in txt.lower():
+                self.log.error("VISION | diagnosis: KEY rejected -> rotate "
+                               "GEMINI_API_KEY in repo secrets")
+            elif ("404" in txt or "not found" in txt.lower()
+                  or "no longer available" in txt.lower()):
+                self.log.error("VISION | diagnosis: key VALID, but every "
+                               "model failed even after discovery -> check "
+                               "network egress to "
+                               "generativelanguage.googleapis.com")
+            else:
+                self.log.error("VISION | diagnosis: network/timeout -> "
+                               "check egress from the runner")
 
     # --------------------------------------------------------------- login
 
@@ -1520,9 +1640,6 @@ class Agent:
         key = "%s:%s" % (state, self.scene_hex)
 
         state_changed = state != self.last_asked_state
-        fresh_scene = (hamming(int(self.scene_hex, 16),
-                               int(self.last_scene_hex, 16)) >= 8
-                       if self.last_scene_hex else True)
         replay = self.memory.cache.get_replayable(key)
         same_key_retry_ok = not (key == self.last_ask_key
                                  and time.time() - self.last_ask_ts
@@ -1582,15 +1699,11 @@ class Agent:
         now = time.time()
         alive = []
         for c in chips:
-            k = SpatialPolicy._dead_key(
-                self.scene_hex, c["x"] + c["w"] // 2, c["y"] + c["h"] // 2)
-            rec = self.dead.get(k)
+            cx, cy = c["x"] + c["w"] // 2, c["y"] + c["h"] // 2
+            k = SpatialPolicy._dead_key(self.scene_hex, cx, cy)
+            gk = SpatialPolicy._dead_key(None, cx, cy)
+            rec = self.dead.get(k) or self.dead.get(gk)
             if rec and rec.get("until", 0) > now:
-                continue
-            gk = SpatialPolicy._dead_key(None, c["x"] + c["w"] // 2,
-                                        c["y"] + c["h"] // 2)
-            grec = self.dead.get(gk)
-            if grec and grec.get("until", 0) > now:
                 continue
             alive.append(c)
         if not alive:
@@ -1791,7 +1904,7 @@ class Agent:
             await self._vlm_selftest()                 # truth in 5 seconds
             if not self.vlm_ok and cfg.require_vlm:
                 self.log.error("VISION | --require-vlm set and selftest "
-                              "failed; exiting so CI fails visibly")
+                               "failed; exiting so CI fails visibly")
                 try:
                     await self.context.close()
                     if browser:
