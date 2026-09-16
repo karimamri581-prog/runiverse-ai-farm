@@ -1467,17 +1467,17 @@ async def main(cfg: Config):
     async with async_playwright() as pw:
         browser = None
         common = dict(headless=cfg.headless, args=_chromium_args(cfg),
-                      slow_mo=cfg.slowmo, user_agent=cfg.user_agent)
+                      slow_mo=cfg.slowmo)
         if cfg.user_data_dir:
             context = await pw.chromium.launch_persistent_context(
                 cfg.user_data_dir,
                 viewport={"width": cfg.viewport_w, "height": cfg.viewport_h},
-                ignore_https_errors=True, **common)
+                ignore_https_errors=True, user_agent=cfg.user_agent, **common)
         else:
             browser = await pw.chromium.launch(**common)
             context = await browser.new_context(
                 viewport={"width": cfg.viewport_w, "height": cfg.viewport_h},
-                ignore_https_errors=True, locale="en-US")
+                ignore_https_errors=True, locale="en-US", user_agent=cfg.user_agent)
         await context.add_init_script(JS_INIT)
         page = context.pages[0] if context.pages else await context.new_page()
         page.set_default_timeout(15000)
