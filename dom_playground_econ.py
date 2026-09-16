@@ -57,7 +57,7 @@ class Config:
     user_agent: str = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
     proxy: str = ""
-    after_goal: str = "economy"          # economy | exit
+    after_goal: str = "economy"
     enter_submit: bool = False
     popup_help: bool = True
     allow_signing: bool = False
@@ -169,14 +169,16 @@ def embed(text: str) -> list:
 def _dot(a, b) -> float:
     return sum(x * y for x, y in zip(a, b))
 
+# Removed ambiguous words like 'forge' and 'wiki' to prevent tab-looping
 ACT_ANCHORS = {
     "GATHER":  "gather collect harvest mine chop fish forage farm hunt reap "
-               "loot claim resources daily",
-    "CRAFT":   "craft forge smelt build make create brew cook smith enchant "
-               "combine synthesize upgrade",
+               "loot claim resources daily expedition send scout",
+    "CRAFT":   "craft smelt build make create brew cook smith enchant "
+               "combine synthesize upgrade enhance reforge",
     "SELL":    "sell list market trade exchange auction offer merchant post "
                "listing price",
-    "EXPLORE": "explore discover unknown new map wiki menu inventory profile",
+    "EXPLORE": "explore discover unknown new map menu inventory profile "
+               "catalog bag account",
 }
 ACT_VEC = {k: embed(v) for k, v in ACT_ANCHORS.items()}
 ACT_DEST = {"GATHER": "gathering", "CRAFT": "crafting",
@@ -440,7 +442,7 @@ async def probe_page(page, cycle: int) -> dict:
 # ═════════════ 4. ECONOMY TRACKER (inventory, state machine, loops) ═══════════
 
 NUM_RE = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)([KkMmBb])?(?![\d%])")
-WORD_RE = re.compile(r"[A-Za-z$€£₿◎Ξ][A-Za-z$€₿◎Ξ]{0,14}")
+WORD_RE = re.compile(r"[A-Za-z$€£₿◎Ξ][A-Za-z$€£₿◎Ξ]{0,14}")
 GAIN_RE = re.compile(r"([+-])\s*(\d+)\s+([A-Za-z][A-Za-z ]{2,26})")
 MULT = {"k": 1e3, "m": 1e6, "b": 1e9}
 
@@ -904,7 +906,8 @@ class Reasoner:
         cands = self._rank_for_activity(state, activity, memory, False)
         if cands:
             score, el = cands[0]
-            if score >= 0.30 and score > self._navness(el, memory) + 0.10:
+            # Increased threshold to 0.45 to force it to find real action buttons
+            if score >= 0.45 and score > self._navness(el, memory) + 0.20:
                 return self._plan_click(el, state, activity, memory,
                                         name="act-" + activity.lower(),
                                         force=force, match=score,
@@ -994,8 +997,9 @@ class Reasoner:
         s = 2.4 * _dot(embed(lab), av)
         if el.get("tag") == "button" or el.get("role") == "button":
             s += 0.12
-        if el.get("href"):
-            s -= 0.22
+        # Aggressively penalize links/tabs so they aren't chosen as primary actions
+        if el.get("href") or el.get("tag") == "a":
+            s -= 1.50
         if (el.get("y") or 0) > self.cfg.viewport_h * 1.7:
             s -= 0.25
         if (el.get("w") or 0) < 22 or (el.get("h") or 0) < 12:
@@ -1568,7 +1572,7 @@ def _error_sig(res: ExecutionResult):
 
 @dataclass
 class Reflection:
-    outcome: str        # econ | progress | nav | futile | error
+    outcome: str
     satisfied: bool
     error_sig: str
     delta: EconDelta
@@ -1655,13 +1659,13 @@ class Reflector:
 class Memory:
     def __init__(self, path: Path):
         self.path = path
-        self.elem = {}        # fp -> {tries, wins, fails, cd[], nav, disable_at}
-        self.wins = {}        # page|goal -> winning generated code (pipeline)
+        self.elem = {}
+        self.wins = {}
         self.sel_fails = {}
         self.filled = set()
-        self.nav_map = {}      # element fp -> scene tag it navigates to
-        self.scene_aff = {}    # scene tag -> {activity: successes}
-        self.econ = {}         # EconomyTracker persistence blob
+        self.nav_map = {}
+        self.scene_aff = {}
+        self.econ = {}
         self.cycles = 0
         self.sessions = 0
 
@@ -1738,7 +1742,7 @@ class Agent:
         self.subgoals = [s.strip() for s in cfg.goal.split(";") if s.strip()] \
             or ["enter the game"]
         self.idx = 0
-        self.mode = "pipeline"          # pipeline -> economy
+        self.mode = "pipeline"
         self.stuck = {}
         self.history = deque(maxlen=14)
         self.cycle = 0
