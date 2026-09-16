@@ -1,0 +1,37 @@
+name: DOM Playground Agent
+on:
+  schedule:
+    - cron: "0 * * * *" # Runs every hour automatically
+  workflow_dispatch:
+
+jobs:
+  farm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # Runs for 5.5 hours straight
+    permissions:
+      contents: write # Allows the bot to save its memory
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Dependencies
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Run Playground Agent
+        run: |
+          python dom_playground.py "https://runiverseidle.com/forge" \
+            --goal "log in; enter game" \
+            --field email=karimamri581@gmail.com \
+            --field password=Taetae1997* \
+            --after-goal linger
+      - name: Save Agent Memory
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add playground_memory.json || echo "No memory file yet"
+          git commit -m "Save Playground Memory" || echo "No changes to commit"
+          git push
