@@ -1,13 +1,13 @@
-name: Runiverse God Agent
+name: Living Gamer AI
 on:
   schedule:
-    - cron: "0 * * * *" # Runs every hour automatically
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
   farm:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Runs for 5.5 hours straight
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -16,18 +16,15 @@ jobs:
           python-version: '3.11'
       - name: Install Dependencies
         run: |
-          pip install playwright requests google-genai
+          pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Run God Agent
-        run: python runiverse_bot.py
-        env:
-          BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - name: Run Living Agent
+        run: python living_agent.py "https://runiverseidle.com/forge" --max-minutes 300
       - name: Save Agent Memory
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add agent_memory.json || echo "No memory file yet"
-          git commit -m "Save Agent Memory" || echo "No changes to commit"
+          git commit -m "Save Living Agent Memory" || echo "No changes to commit"
           git push
