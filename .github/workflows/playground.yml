@@ -1,15 +1,15 @@
 name: DOM Playground Econ Agent
 on:
   schedule:
-    - cron: "0 * * * *" # Runs every hour automatically
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
   farm:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Runs for 5.5 hours straight
+    timeout-minutes: 350
     permissions:
-      contents: write # Allows the bot to save its memory
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
