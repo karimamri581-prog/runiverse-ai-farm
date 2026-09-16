@@ -30,7 +30,7 @@ import urllib.request
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from playwright.async_api import async_playwright
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # --- CONFIG ---
 EMAIL = os.environ.get("GAME_EMAIL", "karimamri581@gmail.com")
@@ -160,8 +160,6 @@ JS_RECTS = r"""() => {
 
 RISKY_RE = re.compile(r"\b(approve|transfer|withdraw|burn|spend|swap|mint|"
                       r"send|sign(?:\s+transaction)?)\b", re.I)
-CURRENCY_WORDS = ("gold", "coin", "money", "cash", "token", "gem", "silver",
-                  "credit", "currency", "usd", "usdc", "eth", "sol", "bnb")
 
 # --- 2. LOCAL VISION PRIMITIVES ---
 
@@ -338,21 +336,27 @@ class RateLimited(Exception):
 class Transient(Exception): pass
 
 class GeminiVision:
-    NAME = "gemini"; DEFAULT_MODEL = "gemini-1.5-pro"
+    NAME = "gemini"
+    # FIX: Use gemini-2.0-flash as default, fallback to 1.5-flash if needed
+    MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
     ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
                 "%s:generateContent")
 
     def __init__(self, key: str, model: str):
-        self.key = key; self.model = model or self.DEFAULT_MODEL
+        self.key = key
+        if model:
+            self.models = [model] + [m for m in self.MODELS if m != model]
+        else:
+            self.models = self.MODELS
 
-    def _post(self, b64: str, prompt: str) -> str:
+    def _post(self, model: str, b64: str, prompt: str) -> str:
         body = {"contents": [{"role": "user", "parts": [
             {"text": prompt},
             {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
             "generationConfig": {"temperature": 0.2, "max_output_tokens": 700,
                                  "response_mime_type": "application/json"}}
         req = urllib.request.Request(
-            self.ENDPOINT % self.model,
+            self.ENDPOINT % model,
             data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json", "x-goog-api-key": self.key},
             method="POST")
@@ -360,6 +364,9 @@ class GeminiVision:
             with urllib.request.urlopen(req, timeout=90) as r:
                 data = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            if e.code == 404:
+                # Model not found, try next in list
+                raise Transient("model_404")
             if e.code == 429:
                 ra = e.headers.get("retry-after")
                 try: ra = float(ra) if ra else None
@@ -377,12 +384,16 @@ class GeminiVision:
 
     def _ask_sync(self, jpeg_bytes: bytes, prompt: str) -> str:
         b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-        for attempt in (1, 2):
-            try: return self._post(b64, prompt)
-            except Transient:
-                if attempt == 2: raise
-                time.sleep(2.5)
-        raise Transient("unreachable")
+        for model in self.models:
+            for attempt in (1, 2):
+                try:
+                    return self._post(model, b64, prompt)
+                except Transient as e:
+                    if "model_404" in str(e):
+                        break # Try next model immediately
+                    if attempt == 2: raise
+                    time.sleep(2.5)
+        raise Transient("all models failed")
 
     async def ask(self, jpeg_bytes: bytes, prompt: str) -> str:
         return await asyncio.to_thread(self._ask_sync, jpeg_bytes, prompt)
@@ -448,7 +459,7 @@ def make_vision(cfg: Config, log: logging.Logger):
         key = key or os.environ.get(env) or os.environ.get("GOOGLE_API_KEY")
         if not key: raise SystemExit("missing $%s" % env)
     v = (GeminiVision(key, cfg.model) if provider == "gemini" else OpenAIVision(key, cfg.model))
-    log.info("vision provider: %s / %s", v.NAME, v.model)
+    log.info("vision provider: %s", v.NAME)
     return v
 
 # --- 4. DECISION PARSING & VLM PROMPT ---
@@ -871,7 +882,6 @@ class Agent:
         self.last_ask_key = ""; self.last_ask_ts = 0.0; self.last_asked_state = ""
         self.pending = None; self.recent = deque(maxlen=12)
         self.inv_scale = 1.0
-        # FIX: Initialize _last_chips to prevent AttributeError
         self._last_chips = []
         self._last_reload = 0.0; self._console_errors = 0
 
@@ -961,7 +971,6 @@ class Agent:
         chips = detect_chips(img)
         dom = await self.dom_chips(scale)
         if dom: chips = _merge_boxes(dom + chips, 24)
-        # FIX: Save chips for the policy step
         self._last_chips = chips
         
         self.scene_hex = "%016x" % dhash(img)
