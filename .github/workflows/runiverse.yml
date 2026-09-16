@@ -8,6 +8,8 @@ jobs:
   farm:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    permissions:
+      contents: write # Allows the bot to save memory back to the repo
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
