@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-vision_agent.py (v3) -- teacher/memory farm agent.
+vision_agent.py (v3.2) -- teacher/memory farm agent + Cloudflare interstitial wait.
 
-ONE API call teaches a screen (labels every button, tags its role:
-GATHER/CRAFT/SELL/NAV/UI, reads the numbers). That knowledge is saved to
-vision_memory.json and that screen is then played 100% locally, forever.
-API usage drops toward a handful of calls per run as the farm gets
-educated. Free-tier friendly: per-run cap + persisted daily cap + 429
-backoff; when the budget is spent it keeps playing on what it knows.
+v3.2: the old bypass, spelled out. The interstitial auto-clears in seconds;
+the agent waits it out at login AND in the loop before doing anything.
+v3.1: CF gate (never click/teach on a wall; exit clean if truly stuck),
+ghost-scene forgetting, nav-dud budget, edge-triggered teacher calls,
+reload discipline, remembered-CF-scenes never match again.
 
-Run (exactly what the workflow runs):
+Run:
     python vision_agent.py "https://runiverseidle.com/forge" --provider gemini
 """
 
@@ -32,7 +31,7 @@ import time
 import traceback
 import warnings
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -45,7 +44,7 @@ from playwright.async_api import async_playwright
 warnings.filterwarnings("ignore", message=".*getdata.*",
                         category=DeprecationWarning)
 
-__version__ = "3.0.0"
+__version__ = "3.2.0"
 
 EMAIL_LOC = ('input[type="email"], input[name*="mail" i], '
              'input[autocomplete="email"], input[placeholder*="mail" i], '
@@ -95,6 +94,13 @@ DEST_WORDS = {
     "SELL": ("market", "shop", "trade", "sell", "merchant", "auction",
              "bazaar"),
 }
+CF_TITLE_RE = re.compile(r"just a moment|attention required|checking your "
+                         r"browser|security verification|verify you are "
+                         r"human", re.I)
+JS_CF = (r"""() => !!(document.querySelector(
+  '#challenge-form, .cf-turnstile, [class*="cf-chl"], #cf-challenge-running,'
+  + ' iframe[src*="challenges.cloudflare.com"], #cf-spinner-verify,'
+  + ' #turnstile-wrapper, [class*="cf-turnstile"]'))""")
 
 
 @dataclass
@@ -113,6 +119,7 @@ class Config:
     max_calls: int = 250
     day_cap: int = 250
     verify_every: int = 8
+    cf_patience: float = 240.0
     max_minutes: float = 0.0
     memory_path: str = "vision_memory.json"
     log_path: str = "vision_agent.log"
@@ -128,8 +135,7 @@ class Config:
 
 def parse_args() -> Config:
     ap = argparse.ArgumentParser(
-        description="Teacher/memory farm agent: one API call per screen, "
-                    "then local play forever.")
+        description="Teacher/memory farm agent with a Cloudflare gate.")
     ap.add_argument("url", nargs="?", default=os.environ.get("GAME_URL", ""))
     ap.add_argument("--provider", choices=["auto", "gemini", "openai"],
                     default="auto")
@@ -144,6 +150,9 @@ def parse_args() -> Config:
     ap.add_argument("--max-calls", type=int, default=250)
     ap.add_argument("--day-cap", type=int, default=250)
     ap.add_argument("--verify-every", type=int, default=8)
+    ap.add_argument("--cf-patience", type=float, default=240.0,
+                    help="seconds to wait out a wall before exiting for "
+                         "the next scheduled run")
     ap.add_argument("--max-minutes", type=float, default=0.0)
     ap.add_argument("--memory", default="vision_memory.json")
     ap.add_argument("--log-file", default="vision_agent.log")
@@ -167,11 +176,11 @@ def parse_args() -> Config:
                  session_file=a.session_file.strip(), slowmo=a.slowmo,
                  interval=a.interval, max_calls=a.max_calls,
                  day_cap=a.day_cap, verify_every=a.verify_every,
-                 max_minutes=a.max_minutes, memory_path=a.memory,
-                 log_path=a.log_file, log_level=a.log_level,
-                 start_state=a.start_state, pure_vision=a.pure_vision,
-                 no_require=a.no_require, save_shots=not a.no_shots,
-                 seed=a.seed)
+                 cf_patience=a.cf_patience, max_minutes=a.max_minutes,
+                 memory_path=a.memory, log_path=a.log_file,
+                 log_level=a.log_level, start_state=a.start_state,
+                 pure_vision=a.pure_vision, no_require=a.no_require,
+                 save_shots=not a.no_shots, seed=a.seed)
     if not cfg.url.startswith(("http://", "https://")):
         ap.error("a game URL is required (positional arg or $GAME_URL)")
     return cfg
@@ -675,7 +684,7 @@ class OpenAIVision:
                 try:
                     ra = float(ra) if ra else None
                 except ValueError:
-                    ra = None
+ ra = None
                 raise RateLimited(ra)
             if e.code >= 500:
                 raise Transient("http %d" % e.code)
@@ -878,7 +887,7 @@ class SceneMemory:
                     if v.get("until", 0) > time.time() - 3600}
             scenes = dict(sorted(self.scenes.items(),
                                  key=lambda kv: kv[1].get("ts", 0))[-150:])
-            data = {"version": 6, "scenes": scenes,
+            data = {"version": 7, "scenes": scenes,
                     "manual": self.manual[-4:], "dead": dead,
                     "stats": self.stats, "econ": econ_blob or self.econ}
             tmp = self.path.with_suffix(".tmp")
@@ -889,8 +898,11 @@ class SceneMemory:
             print("memory save failed: %s" % e, file=sys.stderr)
 
     def find(self, h: int):
+        """Tolerant lookup, but NEVER match a remembered Cloudflare wall."""
         best, bd = None, 7
-        for hexkey in self.scenes:
+        for hexkey, entry in self.scenes.items():
+            if CF_TITLE_RE.search(entry.get("scene") or ""):
+                continue
             try:
                 d = hamming(int(hexkey, 16), h)
             except ValueError:
@@ -1104,9 +1116,10 @@ TEACHER_PROMPT = (
     "2. roles: GATHER = produces/collects resources; CRAFT = turns "
     "resources into items; SELL = market/selling; NAV = navigation tab or "
     "menu; UI = close/settings/misc.\n"
-    "3. kind+chip: the best next click for the OBJECTIVE. If a login/auth "
-    "form is visible, kind \"login\" -- the agent has saved credentials and "
-    "WANTS to log in; NEVER suggest Back/Cancel on an auth screen.\n"
+    "3. kind+chip: the best next click for the OBJECTIVE. If a real login "
+    "form (email/password fields) is visible, kind \"login\" -- the agent "
+    "has saved credentials. A Cloudflare/captcha/robot check is NOT a "
+    "login; if you see one, answer kind \"wait\" and say so in notes.\n"
     "4. Report visible numbers (resources, currency, items, energy) in "
     "observations; skip live counters like online players.\n")
 
@@ -1142,6 +1155,51 @@ class Agent:
         self.recent: deque = deque(maxlen=10)
         self.shots_dir = Path("shots")
         self._last_reload = 0.0
+        self.nav_duds = 0
+        self.scene_duds = 0
+        self._forced_teacher = False
+
+    # ---------------- Cloudflare (local, free) ----------------
+
+    async def cf_check(self) -> bool:
+        try:
+            if await self.page.evaluate(JS_CF):
+                return True
+        except Exception:
+            pass
+        try:
+            if CF_TITLE_RE.search((await self.page.title()) or ""):
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def wait_out_cf(self) -> bool:
+        """Patient, passive waiting. Never solves the challenge -- just
+        polls (interstitials usually clear on their own) and, if the wall
+        truly holds, tells the caller to end the run."""
+        deadline = time.time() + self.cfg.cf_patience
+        n = 0
+        while time.time() < deadline and not self.stop["flag"]:
+            n += 1
+            remain = max(3.0, deadline - time.time())
+            self.log.info("CF     | interstitial (poll %d); %.0fs of "
+                          "patience left", n, remain)
+            try:
+                await self.page.mouse.move(random.uniform(200, 1200),
+                                           random.uniform(150, 700), steps=6)
+            except Exception:
+                pass
+            await asyncio.sleep(min(15.0, remain))
+            if not await self.cf_check():
+                self.log.info("CF     | cleared after %d polls", n)
+                self.stuck = 0
+                return True
+        if self.stop["flag"]:
+            return True
+        return not await self.cf_check()
+
+    # ---------------- plumbing ----------------
 
     def _shot(self, name, img):
         if not self.cfg.save_shots:
@@ -1207,6 +1265,8 @@ class Agent:
                 self.log.error("VISION | rotate the key in repo secrets")
             return False
 
+    # ---------------- login ----------------
+
     async def _try_click(self, patterns):
         for pat in patterns:
             rx = re.compile(pat, re.I)
@@ -1238,6 +1298,16 @@ class Agent:
             await page.wait_for_load_state("networkidle", timeout=12000)
         except Exception:
             pass
+        # ---- THE OLD BYPASS, SPELLED OUT ---------------------------
+        # the interstitial auto-clears in seconds; wait it out BEFORE the
+        # login form is touched, so the gate never eats the login attempt
+        for _ in range(6):
+            if await self.cf_check():
+                self.log.info("LOGIN  | interstitial up; waiting it out")
+                await asyncio.sleep(8)
+            else:
+                break
+        # -------------------------------------------------------------
         await self._try_click((r"^accept( all)?$", r"^agree", r"^got it$",
                                r"^ok$", r"^i understand$"))
         await page.wait_for_timeout(1200)
@@ -1363,7 +1433,7 @@ class Agent:
                                           delay=random.uniform(30, 80))
                 await page.keyboard.press("Tab")
                 await page.keyboard.type(PASSWORD,
-                                          delay=random.uniform(30, 80))
+                                         delay=random.uniform(30, 80))
                 await page.keyboard.press("Enter")
                 log.info("LOGIN  | blind keyboard sequence")
                 await page.wait_for_timeout(1500)
@@ -1372,6 +1442,8 @@ class Agent:
             except Exception as e:
                 log.warning("LOGIN  | blind fill failed: %s", str(e)[:120])
         return False
+
+    # ---------------- the teacher call ----------------
 
     async def teacher(self, img, state, with_text=False):
         chips = self.chips
@@ -1396,8 +1468,10 @@ class Agent:
         self._shot("teacher_c%04d_%s.jpg" % (self.cycle, state.lower()), ann)
         buf = io.BytesIO()
         ann.save(buf, "JPEG", quality=72)
-        if not self.gov.allow(force=(self.stuck >= 3
-                                     or self.confusion >= 4)):
+        # edge-triggered force: one forced call per stuck episode
+        force = ((self.stuck >= 3 or self.confusion >= 4)
+                 and not self._forced_teacher)
+        if not self.gov.allow(force=force):
             return None
         try:
             txt = await self.vlm.ask(buf.getvalue(), prompt)
@@ -1409,6 +1483,8 @@ class Agent:
             self.log.warning("TEACH  | transient: %s", str(e)[:180])
             return None
         self.gov.called()
+        if force:
+            self._forced_teacher = True
         self.mem.stats["teacher_calls"] += 1
         self.actions_since_verify = 0
         raw = _extract_json(txt)
@@ -1498,6 +1574,8 @@ class Agent:
             return None
         return Decision(kind=kind, source="teacher")
 
+    # ---------------- local play (free) ----------------
+
     def _local_pick(self, state) -> Decision:
         entry = self.entry
         now = time.time()
@@ -1537,6 +1615,9 @@ class Agent:
             r = role[0]
             return Decision(kind="primary", x=r["x"], y=r["y"],
                             label=r.get("label", ""), chip=r)
+        if self.nav_duds >= 4:
+            return Decision(kind="wait", source="memory", seconds=30.0,
+                            label="nav dud budget spent")
         dest = DEST_WORDS.get(state, ())
         navs = [r for r in recs if r.get("role") == "NAV"]
         match = []
@@ -1558,6 +1639,8 @@ class Agent:
                             label=r.get("label", ""), chip=r)
         return Decision(kind="scroll" if self.cycle % 2 == 0 else "wait",
                         source="memory", label="no %s chip here" % state)
+
+    # ---------------- economy judge ----------------
 
     def _judge_pending(self, deltas):
         if not self.pending or not deltas:
@@ -1585,10 +1668,12 @@ class Agent:
         if hit:
             self.log.info("POLICY | chip (%d,%d) dead for 150s", x, y)
 
+    # ---------------- act + reflect ----------------
+
     async def act(self, dec: Decision):
         page = self.page
         if dec.kind in ("wait", "none"):
-            await asyncio.sleep(max(1.0, min(dec.seconds, 25.0)))
+            await asyncio.sleep(max(1.0, min(dec.seconds, 30.0)))
             return
         if dec.kind == "scroll":
             try:
@@ -1651,6 +1736,8 @@ class Agent:
         if changed:
             self.stuck = 0
             self.confusion = max(0, self.confusion - 1)
+            self.nav_duds = 0
+            self.scene_duds = 0
             self.mem.stats["ok_clicks"] += 1
             if dec.chip:
                 dec.chip["ok"] = int(dec.chip.get("ok", 0)) + 1
@@ -1661,9 +1748,15 @@ class Agent:
                 self.stuck = max(0, self.stuck - 1)
             else:
                 self.stuck += 1
+                if dec.kind == "nav":
+                    self.nav_duds += 1
+                if dec.source == "memory":
+                    self.scene_duds += 1
                 if dec.kind in ("primary", "nav") and dec.x is not None:
                     self._bump_dead(dec.x, dec.y)
         return changed
+
+    # ---------------- run ----------------
 
     async def run(self):
         cfg = self.cfg
@@ -1767,6 +1860,19 @@ class Agent:
                     await self._recover()
                     continue
                 self.cycle += 1
+                if self.stuck < 3 and self.confusion < 4:
+                    self._forced_teacher = False
+                # ---- CF gate: never spend anything on a wall ------------
+                if await self.cf_check():
+                    self._shot("cf_wall.jpg", await self.capture())
+                    cleared = await self.wait_out_cf()
+                    if not cleared:
+                        self.log.warning("CF     | wall persisted past "
+                                         "%.0fs; exiting cleanly -- the "
+                                         "next hourly run starts on a "
+                                         "fresh IP", cfg.cf_patience)
+                        break
+                    continue
                 pre = await self.capture()
                 img, scale = prepare(pre)
                 self.inv_scale = 1.0 / scale
@@ -1777,6 +1883,14 @@ class Agent:
                 h = dhash(img)
                 hexkey, entry = self.mem.find(h)
                 known = entry is not None and entry.get("chips")
+                if known and self.scene_duds >= 6:
+                    self.log.warning("POLICY | scene %s matches badly "
+                                     "(%d dead clicks); forgetting it",
+                                     hexkey[:8], self.scene_duds)
+                    self.mem.scenes.pop(hexkey, None)
+                    known = False
+                    entry = None
+                    self.scene_duds = 0
                 if known:
                     self.scene_hex = hexkey
                     self.entry = entry
@@ -1802,7 +1916,9 @@ class Agent:
                 if not changed and dec.source == "memory" \
                         and dec.kind == "primary":
                     self.confusion += 1
-                if self.stuck >= 12 and time.time() - self._last_reload > 300:
+                if (self.stuck >= 25
+                        and time.time() - self._last_reload > 1200
+                        and not await self.cf_check()):
                     self._last_reload = time.time()
                     self.log.warning("RECOVER | hard reload (stuck %d)",
                                      self.stuck)
